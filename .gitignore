@@ -1,0 +1,14 @@
+node_modules/
+dist/
+npm-debug.log
+.env
+.DS_Store
+*.log
+coverage/
+.nyc_output/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+k8s-app-local.yaml
