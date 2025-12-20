@@ -1,4 +1,4 @@
-# Kubernetes Autoscaling Demo on AWS EC2
+# Kubernetes Autoscaling on AWS EC2
 
 A production-ready demonstration of **Horizontal Pod Autoscaling (HPA)** on a self-managed Kubernetes cluster running on AWS EC2 instances (without EKS). This project features a modern Node.js/TypeScript application with a stunning glassmorphism UI design.
 
@@ -7,10 +7,11 @@ A production-ready demonstration of **Horizontal Pod Autoscaling (HPA)** on a se
 This project showcases:
 - Self-managed Kubernetes cluster on raw EC2 instances
 - Horizontal Pod Autoscaler (HPA) with CPU-based scaling
-- Modern web application with animated gradient background
+- Real-time monitoring dashboard with Server-Sent Events
 - CPU stress testing endpoint for autoscaling validation
 - Multi-stage Docker builds for optimized container images
 - Complete infrastructure automation scripts
+- Tested on Fedora with Minikube + Podman (rootless)
 
 ---
 
@@ -112,11 +113,61 @@ AWS_project/
 ├── tsconfig.json             # TypeScript configuration
 ├── k8s-app.yaml              # Deployment + Service
 ├── k8s-hpa.yaml              # HorizontalPodAutoscaler
-├── setup_aws_node.sh         # AWS EC2 node setup script
+├── setup_aws_node.sh         # AWS EC2 node setup script (Ubuntu)
+├── local-setup-fedora.sh     # Local prerequisites installer (Fedora)
+├── local-setup-ubuntu.sh     # Local prerequisites installer (Ubuntu)
 ├── docker-compose.yml        # Docker Compose for local testing
 ├── local-test.sh             # Automated local testing script
+├── load-generator.sh         # HTTP load generation for testing
 └── README.md                 # This file
 ```
+
+---
+
+## Scripts Execution Order
+
+### First Time Setup (Local Testing on Fedora/Ubuntu):
+
+**Step 1: Install prerequisites** (one-time per machine):
+```bash
+# Fedora
+sudo bash local-setup-fedora.sh
+
+# Ubuntu
+sudo bash local-setup-ubuntu.sh
+```
+**What this does:** Installs Podman (Fedora) or Docker (Ubuntu), kubectl, minikube, conntrack
+
+**Step 2: Test with Docker Compose** (quick validation):
+```bash
+bash local-test.sh docker
+# Opens http://localhost:3000
+# Press Ctrl+C when done, then: docker compose down
+```
+**What this does:** Builds and runs the app in a single container (no Kubernetes, no HPA)
+
+**Step 3: Test with Minikube** (full HPA testing):
+```bash
+bash local-test.sh minikube
+# Follow prompts to access the service URL
+# Monitor scaling with: watch kubectl get hpa
+```
+**What this does:** 
+- Starts local Kubernetes cluster (Minikube)
+- Builds and deploys app with HPA
+- Auto-detects Podman/Docker and configures appropriately
+- Shows service URL for testing
+
+### First Time Setup (AWS Deployment on Ubuntu 22.04 LTS):
+
+**Step 1: Prepare EC2 nodes** (run on EACH of 3 nodes):
+```bash
+# SSH to each node and run:
+sudo bash setup_aws_node.sh
+```
+**What this does:** Configures swap, kernel modules, installs containerd, kubeadm, kubelet, kubectl
+
+**Step 2: Initialize cluster** (see Phase 2 below for complete workflow)
 
 ---
 
@@ -126,43 +177,54 @@ Before deploying to AWS, test the application locally to ensure everything works
 
 ### Option A: Simple Docker Testing (No Autoscaling)
 
-This is the fastest way to verify the application works:
+Fastest way to verify the application:
 
 ```bash
-# Start the application with Docker Compose
+# Start the application
 bash local-test.sh docker
 
-# Access the application
-open http://localhost:3000
+# Test endpoints
+curl http://localhost:3000/health              # Health check
+curl http://localhost:3000/                    # Dashboard  
+curl http://localhost:3000/cpu-load            # CPU test (5 seconds)
 
 # Stop the application
-docker-compose down
+docker compose down
 ```
 
 ### Option B: Full Kubernetes Testing with Minikube (With Autoscaling)
 
-Test the complete setup including HPA:
+Complete HPA demonstration (now works with both Docker and Podman):
 
 ```bash
-# Run the automated Minikube setup
+# Automated setup - handles Docker/Podman detection
 bash local-test.sh minikube
 
 # The script will:
-# 1. Start Minikube
-# 2. Enable metrics-server
-# 3. Build the Docker image
-# 4. Deploy the application and HPA
-# 5. Show you the access URL
+# 1. Detect Docker or Podman
+# 2. Start Minikube with appropriate driver
+# 3. Build and load the application image
+# 4. Deploy app + HPA
+# 5. Show service URL
 
-# Generate load to test autoscaling
-SERVICE_URL=$(minikube service k8s-autoscaling-service --url)
-for i in {1..20}; do curl $SERVICE_URL/stress & done
+# After deployment completes, get service URL:
+minikube service k8s-autoscaling-service --url
+# Note the URL (e.g., http://127.0.0.1:XXXXX)
 
-# Monitor scaling in separate terminals
+# Test endpoints (replace XXXXX with actual port):
+curl http://127.0.0.1:XXXXX/health
+curl http://127.0.0.1:XXXXX/cpu-load
+
+# Generate load to trigger HPA scaling:
+for i in $(seq 1 100); do
+    curl -s http://127.0.0.1:XXXXX/cpu-load > /dev/null &
+    sleep 0.3
+done
+
+# Monitor in separate terminals:
 watch kubectl get hpa
 watch kubectl get pods
-
-# Cleanup when done
+watch kubectl top pods
 kubectl delete -f k8s-hpa.yaml
 kubectl delete -f k8s-app-local.yaml
 rm k8s-app-local.yaml
@@ -273,12 +335,12 @@ sudo bash setup_aws_node.sh
 ```
 
 The script will:
-- ✅ Disable swap
-- ✅ Load kernel modules (overlay, br_netfilter)
-- ✅ Configure sysctl parameters
-- ✅ Install and configure containerd with **SystemdCgroup = true**
-- ✅ Install kubeadm, kubelet, kubectl (v1.28)
-- ✅ Hold packages to prevent auto-updates
+- Disable swap
+- Load kernel modules (overlay, br_netfilter)
+- Configure sysctl parameters
+- Install and configure containerd with **SystemdCgroup = true**
+- Install kubeadm, kubelet, kubectl (v1.28)
+- Hold packages to prevent auto-updates
 
 #### Step 4: Initialize Master Node
 
@@ -397,7 +459,7 @@ You should see the beautiful glassmorphism landing page with the pod name displa
 
 ---
 
-## 🔥 Testing Autoscaling on AWS
+## Testing Autoscaling on AWS
 
 ### Method 1: Manual Browser Testing
 
@@ -449,7 +511,7 @@ kubectl get events --sort-by='.lastTimestamp' | grep -i hpa
 
 ---
 
-## 📊 Understanding the HPA Configuration
+## Understanding the HPA Configuration
 
 The `k8s-hpa.yaml` defines sophisticated scaling behavior:
 

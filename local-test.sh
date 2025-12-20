@@ -148,23 +148,51 @@ test_minikube() {
     fi
 
     detect_container_engine
-    MINIKUBE_DRIVER="docker"
-    if [ "$CONTAINER_ENGINE" = "podman" ]; then
+    
+    # Determine driver: check for real docker, otherwise use podman
+    MINIKUBE_DRIVER=""
+    if command_exists docker; then
+        # Check if it's real Docker or Podman emulation
+        if docker version 2>&1 | grep -iq "podman"; then
+            MINIKUBE_DRIVER="podman"
+        else
+            MINIKUBE_DRIVER="docker"
+        fi
+    elif command_exists podman; then
         MINIKUBE_DRIVER="podman"
+    else
+        echo "Error: Neither Docker nor Podman found"
+        exit 1
+    fi
+    
+    # Configure rootless for Podman
+    if [ "$MINIKUBE_DRIVER" = "podman" ]; then
+        minikube config set rootless true
     fi
 
     echo "Starting Minikube with driver: $MINIKUBE_DRIVER"
-    minikube start --driver=${MINIKUBE_DRIVER}
+    minikube start --driver=${MINIKUBE_DRIVER} --container-runtime=containerd
     minikube addons enable metrics-server
 
-    echo "Building image inside Minikube..."
-    eval $(minikube docker-env)
-    docker build -t k8s-autoscaling-demo:latest .
+    echo "Building image..."
+    if [ "$MINIKUBE_DRIVER" = "podman" ]; then
+        # Podman: build and load via tar
+        podman build -t k8s-autoscaling-demo:latest .
+        podman save k8s-autoscaling-demo:latest -o /tmp/k8s-app.tar
+        minikube image load /tmp/k8s-app.tar
+        rm /tmp/k8s-app.tar
+        IMAGE_NAME="localhost/k8s-autoscaling-demo:latest"
+    else
+        # Docker: use docker-env
+        eval $(minikube docker-env)
+        docker build -t k8s-autoscaling-demo:latest .
+        IMAGE_NAME="k8s-autoscaling-demo:latest"
+    fi
 
     echo "Preparing k8s manifests for local image..."
-    sed 's|YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest|k8s-autoscaling-demo:latest|g' k8s-app.yaml > k8s-app-local.yaml
+    sed "s|YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest|${IMAGE_NAME}|g" k8s-app.yaml > k8s-app-local.yaml
     sed -i '/imagePullPolicy/d' k8s-app-local.yaml || true
-    sed -i '/image: k8s-autoscaling-demo:latest/a\        imagePullPolicy: Never' k8s-app-local.yaml || true
+    sed -i "/image: ${IMAGE_NAME}/a\        imagePullPolicy: Never" k8s-app-local.yaml || true
 
     kubectl apply -f k8s-app-local.yaml
     kubectl apply -f k8s-hpa.yaml

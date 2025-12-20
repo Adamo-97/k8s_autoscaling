@@ -37,7 +37,7 @@ echo ""
 make_requests() {
     local count=$1
     for i in $(seq 1 $count); do
-        curl -s -o /dev/null -w "Request %{http_code} - Time: %{time_total}s\n" "${URL}/stress" &
+        curl -s -o /dev/null -w "Request %{http_code} - Time: %{time_total}s\n" --max-time 10 "${URL}/cpu-load" &
         sleep 0.1
     done
 }

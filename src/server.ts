@@ -379,6 +379,28 @@ app.get('/stress', (req: Request, res: Response) => {
 });
 
 // SSE endpoint that runs CPU work and streams progress
+// Simple CPU load endpoint for load testing (short bursts, non-blocking)
+app.get('/cpu-load', async (req: Request, res: Response) => {
+  const start = Date.now();
+  let result = 0;
+  
+  // Perform intensive CPU work for about 5 seconds (enough to trigger HPA but not kill pod)
+  const duration = 5000;
+  while (Date.now() - start < duration) {
+    for (let i = 0; i < 500000; i++) {
+      result += Math.sqrt(i) * Math.sin(i) * Math.cos(i);
+    }
+  }
+  
+  const elapsed = Date.now() - start;
+  res.json({ 
+    status: 'complete', 
+    elapsed, 
+    result: result.toFixed(2),
+    pod: POD_NAME 
+  });
+});
+
 app.get('/stress-stream', async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
