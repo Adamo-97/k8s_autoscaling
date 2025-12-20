@@ -1,5 +1,8 @@
 import express, { Request, Response } from 'express';
 import os from 'os';
+import { promisify } from 'util';
+import { exec as _exec } from 'child_process';
+const exec = promisify(_exec);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,378 +11,178 @@ const POD_NAME = process.env.HOSTNAME || os.hostname();
 // Middleware
 app.use(express.json());
 
-// Main landing page with glassmorphism design
+// Main landing page (clean dark mode, console font)
 app.get('/', (req: Request, res: Response) => {
-  const html = `
-<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>K8s Autoscaling Demo</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team 22</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 25%, #f093fb 50%, #4facfe 75%, #00f2fe 100%);
-            background-size: 400% 400%;
-            animation: gradientShift 15s ease infinite;
-            overflow: hidden;
-        }
-
-        @keyframes gradientShift {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-
-        .container {
-            position: relative;
-            z-index: 1;
-        }
-
-        .glass-card {
-            background: rgba(255, 255, 255, 0.15);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-            padding: 60px 80px;
-            text-align: center;
-            animation: floatIn 1s ease-out;
-            max-width: 600px;
-        }
-
-        @keyframes floatIn {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        h1 {
-            color: #ffffff;
-            font-size: 3rem;
-            margin-bottom: 20px;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-            letter-spacing: -1px;
-        }
-
-        .subtitle {
-            color: #f0f0f0;
-            font-size: 1.2rem;
-            margin-bottom: 40px;
-            font-weight: 300;
-        }
-
-        .pod-info {
-            background: rgba(255, 255, 255, 0.25);
-            backdrop-filter: blur(5px);
-            border-radius: 15px;
-            padding: 30px;
-            margin: 30px 0;
-            border: 1px solid rgba(255, 255, 255, 0.4);
-        }
-
-        .pod-label {
-            color: #e0e0e0;
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 10px;
-            font-weight: 600;
-        }
-
-        .pod-name {
-            color: #ffffff;
-            font-size: 2rem;
-            font-weight: bold;
-            font-family: 'Courier New', monospace;
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
-            word-break: break-all;
-        }
-
-        .features {
-            margin-top: 40px;
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
-        }
-
-        .feature-item {
-            background: rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(5px);
-            padding: 15px;
-            border-radius: 10px;
-            color: #ffffff;
-            font-size: 0.9rem;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-        }
-
-        .feature-icon {
-            font-size: 1.5rem;
-            margin-bottom: 5px;
-        }
-
-        .stress-btn {
-            margin-top: 40px;
-            padding: 15px 40px;
-            font-size: 1.1rem;
-            background: rgba(255, 255, 255, 0.3);
-            border: 2px solid rgba(255, 255, 255, 0.6);
-            border-radius: 50px;
-            color: #ffffff;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .stress-btn:hover {
-            background: rgba(255, 255, 255, 0.5);
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-        }
-
-        .footer {
-            margin-top: 30px;
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 0.85rem;
-        }
-
-        /* Floating particles */
-        .particle {
-            position: absolute;
-            background: rgba(255, 255, 255, 0.5);
-            border-radius: 50%;
-            animation: float 20s infinite;
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translateY(0) translateX(0); }
-            25% { transform: translateY(-100px) translateX(100px); }
-            50% { transform: translateY(-50px) translateX(-100px); }
-            75% { transform: translateY(-150px) translateX(50px); }
-        }
+      :root{--bg:#0b0f14;--card:rgba(20,24,28,0.9);--muted:#9aa6b2;--accent:#6ee7b7}
+      *{box-sizing:border-box}
+      html,body{height:100%}
+      body{margin:0;background:var(--bg);color:#e6eef3;font-family:'SFMono-Regular','Menlo','Monaco','Consolas',monospace;display:flex;align-items:center;justify-content:center}
+      .card{background:var(--card);padding:36px;border-radius:10px;max-width:720px;width:calc(100% - 32px);border:1px solid rgba(255,255,255,0.03)}
+      h1{margin:0 0 8px 0;font-size:32px}
+      p{color:#9aa6b2}
+      .links{margin-top:18px}
+      a{color:var(--accent);text-decoration:none;margin-right:14px}
     </style>
-</head>
-<body>
-    <div class="particle" style="width: 60px; height: 60px; top: 10%; left: 10%; animation-delay: 0s;"></div>
-    <div class="particle" style="width: 80px; height: 80px; top: 70%; left: 80%; animation-delay: 5s;"></div>
-    <div class="particle" style="width: 40px; height: 40px; top: 40%; left: 70%; animation-delay: 10s;"></div>
-    <div class="particle" style="width: 50px; height: 50px; top: 80%; left: 20%; animation-delay: 15s;"></div>
-
-    <div class="container">
-        <div class="glass-card">
-            <h1>K8s Autoscaling</h1>
-            <div class="subtitle">Horizontal Pod Autoscaler Demo on AWS EC2</div>
-            
-            <div class="pod-info">
-                <div class="pod-label">Currently Served By Pod:</div>
-                <div class="pod-name">${POD_NAME}</div>
-            </div>
-
-            <div class="features">
-                <div class="feature-item">
-                    <div class="feature-icon">AS</div>
-                    <div>Auto-scaling</div>
-                </div>
-                <div class="feature-item">
-                    <div class="feature-icon">EC2</div>
-                    <div>AWS EC2</div>
-                </div>
-                <div class="feature-item">
-                    <div class="feature-icon">MS</div>
-                    <div>Metrics Server</div>
-                </div>
-                <div class="feature-item">
-                    <div class="feature-icon">HPA</div>
-                    <div>HPA Enabled</div>
-                </div>
-            </div>
-
-            <button class="stress-btn" onclick="window.location.href='/stress'">
-                Trigger CPU Load
-            </button>
-
-            <div class="footer">
-                Kubernetes • Node.js • TypeScript • Docker
-            </div>
-        </div>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Team 22</h1>
+      <p>Lightweight autoscaling demo for Kubernetes on EC2 (no EKS required).</p>
+      <div class="links">
+        <a href="/stress">Run stress (30s CPU)</a>
+        <a href="/health">Health</a>
+        <a href="/pods">Pods</a>
+      </div>
+      <div class="pod">Pod: ${POD_NAME}</div>
     </div>
-</body>
-</html>
-  `;
+  </body>
+</html>`;
   res.send(html);
 });
-
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
   res.json({
     status: 'healthy',
     pod: POD_NAME,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+    memory: process.memoryUsage()
   });
 });
 
 // CPU-intensive stress endpoint for testing autoscaling
+// Serve the interactive stress control page (client will connect to SSE)
 app.get('/stress', (req: Request, res: Response) => {
-  const startTime = Date.now();
-  const duration = 30000; // 30 seconds of stress
-
-  // Perform CPU-intensive calculations
-  let result = 0;
-  while (Date.now() - startTime < duration) {
-    for (let i = 0; i < 1000000; i++) {
-      result += Math.sqrt(i) * Math.sin(i) * Math.cos(i);
-    }
-  }
-
-  const endTime = Date.now();
-  const elapsedTime = endTime - startTime;
-
-  const html = `
-<!DOCTYPE html>
+  const html = `<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stress Test Complete</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            background-size: 400% 400%;
-            animation: gradientShift 10s ease infinite;
-        }
-
-        @keyframes gradientShift {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-
-        .glass-card {
-            background: rgba(255, 255, 255, 0.15);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-            padding: 60px 80px;
-            text-align: center;
-            max-width: 600px;
-        }
-
-        h1 {
-            color: #ffffff;
-            font-size: 2.5rem;
-            margin-bottom: 20px;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-        }
-
-        .info {
-            background: rgba(255, 255, 255, 0.25);
-            border-radius: 15px;
-            padding: 20px;
-            margin: 20px 0;
-            border: 1px solid rgba(255, 255, 255, 0.4);
-        }
-
-        .label {
-            color: #e0e0e0;
-            font-size: 0.9rem;
-            margin-bottom: 5px;
-        }
-
-        .value {
-            color: #ffffff;
-            font-size: 1.5rem;
-            font-weight: bold;
-            font-family: 'Courier New', monospace;
-        }
-
-        .back-btn {
-            margin-top: 30px;
-            padding: 15px 40px;
-            font-size: 1.1rem;
-            background: rgba(255, 255, 255, 0.3);
-            border: 2px solid rgba(255, 255, 255, 0.6);
-            border-radius: 50px;
-            color: #ffffff;
-            text-decoration: none;
-            display: inline-block;
-            transition: all 0.3s ease;
-            font-weight: 600;
-        }
-
-        .back-btn:hover {
-            background: rgba(255, 255, 255, 0.5);
-            transform: translateY(-2px);
-        }
-
-        .message {
-            color: #ffffff;
-            margin-top: 20px;
-            font-size: 1.1rem;
-            line-height: 1.6;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Team 22 - Stress Control</title>
+  <style>
+    :root{--bg:#0b0f14;--card:rgba(20,24,28,0.9);--muted:#9aa6b2;--accent:#6ee7b7;--warn:#f59e0b}
+    body{margin:0;background:var(--bg);color:#e6eef3;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh}
+    .card{background:var(--card);padding:28px;border-radius:10px;width:720px;max-width:96%;box-shadow:0 8px 30px rgba(0,0,0,0.6)}
+    h1{margin:0 0 8px 0}
+    .controls{display:flex;gap:12px;margin-top:12px}
+    button{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:var(--accent);cursor:pointer}
+    .danger{border-color:rgba(245,158,11,0.12);color:var(--warn)}
+    .info{margin-top:14px;color:var(--muted);font-size:13px}
+    .bar{height:14px;background:rgba(255,255,255,0.06);border-radius:8px;overflow:hidden;margin-top:12px}
+    .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#35b779);width:0%}
+    .meta{display:flex;gap:18px;margin-top:12px;font-size:13px;color:var(--muted)}
+  </style>
 </head>
 <body>
-    <div class="glass-card">
-        <h1>Stress Test Complete!</h1>
-        
-        <div class="info">
-            <div class="label">Pod Name:</div>
-            <div class="value">${POD_NAME}</div>
-        </div>
-
-        <div class="info">
-            <div class="label">Processing Time:</div>
-            <div class="value">${elapsedTime}ms</div>
-        </div>
-
-        <div class="info">
-            <div class="label">Calculation Result:</div>
-            <div class="value">${result.toExponential(2)}</div>
-        </div>
-
-        <div class="message">
-            This request triggered 30 seconds of intensive CPU calculations.<br>
-            Watch your HPA scale up if CPU usage exceeds 50%!
-        </div>
-
-        <a href="/" class="back-btn">← Back to Home</a>
+  <div class="card">
+    <h1>Stress Control</h1>
+    <div class="info">Pod: ${POD_NAME} · PID: ${process.pid} · Node: ${process.version}</div>
+    <div class="controls">
+      <button id="start">Start CPU Load</button>
+      <button id="stop" class="danger">Stop (disconnect)</button>
+      <a href="/" style="align-self:center;color:var(--muted);text-decoration:none">Back</a>
     </div>
+
+    <div class="bar" aria-hidden>
+      <i id="progress"></i>
+    </div>
+    <div class="meta">
+      <div id="percent">Progress: 0%</div>
+      <div id="elapsed">Elapsed: 0s</div>
+      <div id="result">Result: —</div>
+    </div>
+  </div>
+
+  <script>
+    let es;
+    const startBtn = document.getElementById('start');
+    const stopBtn = document.getElementById('stop');
+    const progressEl = document.getElementById('progress');
+    const percentEl = document.getElementById('percent');
+    const elapsedEl = document.getElementById('elapsed');
+    const resultEl = document.getElementById('result');
+
+    function connect() {
+      if (es) es.close();
+      es = new EventSource('/stress-stream');
+      es.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          progressEl.style.width = d.progress + '%';
+          percentEl.textContent = 'Progress: ' + d.progress + '%';
+          elapsedEl.textContent = 'Elapsed: ' + Math.floor(d.elapsed/1000) + 's';
+          if (d.result !== undefined) resultEl.textContent = 'Result: ' + d.result.toExponential(2);
+        } catch(e) { console.error(e); }
+      };
+      es.onerror = () => {
+        es.close();
+        es = null;
+      };
+    }
+
+    startBtn.onclick = () => {
+      connect();
+      startBtn.disabled = true;
+    };
+    stopBtn.onclick = () => {
+      if (es) es.close();
+      startBtn.disabled = false;
+    };
+  </script>
 </body>
-</html>
-  `;
+</html>`;
   res.send(html);
+});
+
+// SSE endpoint that runs CPU work and streams progress
+app.get('/stress-stream', async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders && res.flushHeaders();
+
+  const duration = 30000; // 30s
+  const start = Date.now();
+  let lastProgress = -1;
+  let result = 0;
+
+  function send(data: object) {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
+  // perform CPU work in small chunks, yielding to event loop so SSE can flush
+  while (Date.now() - start < duration) {
+    const chunkStart = Date.now();
+    // busy work for ~80ms
+    while (Date.now() - chunkStart < 80) {
+      for (let i = 0; i < 200000; i++) {
+        result += Math.sqrt(i) * Math.sin(i) * Math.cos(i);
+      }
+    }
+    const elapsed = Date.now() - start;
+    const progress = Math.min(100, Math.floor((elapsed / duration) * 100));
+    if (progress !== lastProgress) {
+      lastProgress = progress;
+      send({ progress, elapsed, result: Number(result.toFixed(6)) });
+    }
+    // yield to event loop so client receives updates
+    await new Promise((r) => setImmediate(r));
+    if (res.writableEnded) break;
+  }
+
+  const totalElapsed = Date.now() - start;
+  send({ progress: 100, elapsed: totalElapsed, result: Number(result.toFixed(6)) });
+  // close stream
+  res.write('event: done\n');
+  res.write(`data: ${JSON.stringify({ status: 'complete' })}\n\n`);
+  res.end();
 });
 
 // Start the server
