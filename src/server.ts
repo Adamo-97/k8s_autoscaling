@@ -11,41 +11,278 @@ const POD_NAME = process.env.HOSTNAME || os.hostname();
 // Middleware
 app.use(express.json());
 
-// Main landing page (clean dark mode, console font)
+// Unified dashboard with real-time pod monitoring and HPA status
 app.get('/', (req: Request, res: Response) => {
   const html = `<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Team 22</title>
-    <style>
-      :root{--bg:#0b0f14;--card:rgba(20,24,28,0.9);--muted:#9aa6b2;--accent:#6ee7b7}
-      *{box-sizing:border-box}
-      html,body{height:100%}
-      body{margin:0;background:var(--bg);color:#e6eef3;font-family:'SFMono-Regular','Menlo','Monaco','Consolas',monospace;display:flex;align-items:center;justify-content:center}
-      .card{background:var(--card);padding:36px;border-radius:10px;max-width:720px;width:calc(100% - 32px);border:1px solid rgba(255,255,255,0.03)}
-      h1{margin:0 0 8px 0;font-size:32px}
-      p{color:#9aa6b2}
-      .links{margin-top:18px}
-      a{color:var(--accent);text-decoration:none;margin-right:14px}
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h1>Team 22</h1>
-      <p>Lightweight autoscaling demo for Kubernetes on EC2 (no EKS required).</p>
-      <div class="links">
-        <a href="/stress">Run stress (30s CPU)</a>
-        <a href="/health">Health</a>
-        <a href="/pods">Pods</a>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team 22 - K8s Autoscaling Dashboard</title>
+  <style>
+    :root{--bg:#0a0e14;--card:#14181c;--muted:#9aa6b2;--accent:#6ee7b7;--warn:#f59e0b;--danger:#ef4444}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:#e6eef3;font-family:'Courier New',monospace;padding:20px;min-height:100vh}
+    h1{font-size:24px;margin-bottom:8px}
+    h2{font-size:16px;margin:16px 0 8px;color:var(--accent);text-transform:uppercase;letter-spacing:1px}
+    .container{max-width:1400px;margin:0 auto}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px}
+    .card{background:var(--card);padding:16px;border-radius:8px;border:1px solid rgba(255,255,255,0.03)}
+    .card h3{font-size:14px;margin-bottom:10px;color:var(--muted)}
+    .stat{display:flex;justify-content:space-between;margin:6px 0;font-size:13px}
+    .stat .label{color:var(--muted)}
+    .stat .value{color:var(--accent);font-weight:700}
+    .pod-card{background:var(--card);padding:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:8px;transition:all 0.3s}
+    .pod-card.new{animation:highlight 1s ease-out;border-color:var(--accent)}
+    @keyframes highlight{from{background:rgba(110,231,183,0.15)}to{background:var(--card)}}
+    .pod-card .name{font-weight:700;margin-bottom:4px;font-size:13px}
+    .pod-card .meta{font-size:11px;color:var(--muted);margin:2px 0}
+    .status{display:inline-block;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600}
+    .status.running{background:rgba(110,231,183,0.1);color:var(--accent)}
+    .status.pending{background:rgba(245,158,11,0.1);color:var(--warn)}
+    .status.failed{background:rgba(239,68,68,0.1);color:var(--danger)}
+    .controls{display:flex;gap:10px;margin-top:12px}
+    button{background:rgba(110,231,183,0.06);border:1px solid rgba(110,231,183,0.2);padding:10px 16px;border-radius:6px;color:var(--accent);cursor:pointer;font-family:inherit;font-size:13px}
+    button:hover{background:rgba(110,231,183,0.12)}
+    button:disabled{opacity:0.4;cursor:not-allowed}
+    .bar{height:12px;background:rgba(255,255,255,0.05);border-radius:6px;overflow:hidden;margin-top:8px}
+    .bar > div{height:100%;background:linear-gradient(90deg,var(--accent),#35b779);transition:width 0.3s}
+    .hpa-info{display:flex;gap:20px;flex-wrap:wrap}
+    .hpa-info > div{flex:1;min-width:120px}
+    #logs{background:rgba(0,0,0,0.3);padding:12px;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;line-height:1.6;color:var(--muted)}
+    .log-entry{margin:2px 0}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Team 22 - Kubernetes Autoscaling Dashboard</h1>
+    <p style="color:var(--muted);margin-bottom:20px">Live monitoring · Served by pod: <strong style="color:var(--accent)">${POD_NAME}</strong></p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>HPA Status</h3>
+        <div id="hpa-status">
+          <div class="stat"><span class="label">Current Replicas</span><span class="value" id="current-replicas">—</span></div>
+          <div class="stat"><span class="label">Desired Replicas</span><span class="value" id="desired-replicas">—</span></div>
+          <div class="stat"><span class="label">Min / Max</span><span class="value" id="min-max">—</span></div>
+          <div class="stat"><span class="label">CPU Usage</span><span class="value" id="cpu-usage">—</span></div>
+        </div>
       </div>
-      <div class="pod">Pod: ${POD_NAME}</div>
+
+      <div class="card">
+        <h3>Stress Control</h3>
+        <div class="stat"><span class="label">Status</span><span class="value" id="stress-status">Idle</span></div>
+        <div class="bar"><div id="stress-bar" style="width:0%"></div></div>
+        <div class="controls">
+          <button id="start-stress">Start CPU Load (30s)</button>
+          <button id="stop-stress" disabled>Stop</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Cluster Info</h3>
+        <div class="stat"><span class="label">Active Pods</span><span class="value" id="pod-count">—</span></div>
+        <div class="stat"><span class="label">Node Version</span><span class="value">${process.version}</span></div>
+        <div class="stat"><span class="label">PID</span><span class="value">${process.pid}</span></div>
+        <div class="stat"><span class="label">Uptime</span><span class="value" id="uptime">—</span></div>
+      </div>
     </div>
-  </body>
+
+    <h2>Active Pods</h2>
+    <div id="pods-grid" class="grid"></div>
+
+    <h2>Event Log</h2>
+    <div id="logs"></div>
+  </div>
+
+  <script>
+    let stressES, clusterES;
+    const startTime = Date.now();
+    const knownPods = new Set();
+
+    function log(msg) {
+      const logs = document.getElementById('logs');
+      const time = new Date().toLocaleTimeString();
+      logs.innerHTML = '<div class="log-entry">[' + time + '] ' + msg + '</div>' + logs.innerHTML;
+    }
+
+    function updateUptime() {
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      document.getElementById('uptime').textContent = m + 'm ' + s + 's';
+    }
+    setInterval(updateUptime, 1000);
+
+    // Connect to cluster status SSE
+    function connectCluster() {
+      if (clusterES) clusterES.close();
+      clusterES = new EventSource('/cluster-status');
+      clusterES.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          
+          // HPA
+          if (data.hpa) {
+            document.getElementById('current-replicas').textContent = data.hpa.current || '—';
+            document.getElementById('desired-replicas').textContent = data.hpa.desired || '—';
+            document.getElementById('min-max').textContent = (data.hpa.min || '—') + ' / ' + (data.hpa.max || '—');
+            document.getElementById('cpu-usage').textContent = data.hpa.cpu || '—';
+          }
+
+          // Pods
+          if (data.pods) {
+            const grid = document.getElementById('pods-grid');
+            document.getElementById('pod-count').textContent = data.pods.length;
+            
+            grid.innerHTML = data.pods.map(p => {
+              const isNew = !knownPods.has(p.name);
+              if (isNew) {
+                knownPods.add(p.name);
+                log('New pod detected: ' + p.name);
+              }
+              return \`<div class="pod-card \${isNew ? 'new' : ''}">
+                <div class="name">\${p.name}</div>
+                <div class="meta">IP: \${p.ip} · Age: \${p.age}</div>
+                <div class="meta">Ready: \${p.ready} · Restarts: \${p.restarts}</div>
+                <span class="status \${p.phase.toLowerCase()}">\${p.phase}</span>
+              </div>\`;
+            }).join('');
+          }
+        } catch(e) { console.error(e); }
+      };
+      clusterES.onerror = () => {
+        log('Cluster SSE disconnected, reconnecting...');
+        setTimeout(connectCluster, 2000);
+      };
+    }
+    connectCluster();
+
+    // Stress control
+    document.getElementById('start-stress').onclick = () => {
+      if (stressES) stressES.close();
+      stressES = new EventSource('/stress-stream');
+      document.getElementById('start-stress').disabled = true;
+      document.getElementById('stop-stress').disabled = false;
+      document.getElementById('stress-status').textContent = 'Running';
+      log('CPU stress started');
+
+      stressES.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          document.getElementById('stress-bar').style.width = d.progress + '%';
+          document.getElementById('stress-status').textContent = 'Running (' + d.progress + '%)';
+        } catch(e) {}
+      };
+      stressES.onerror = () => {
+        stressES.close();
+        document.getElementById('start-stress').disabled = false;
+        document.getElementById('stop-stress').disabled = true;
+        document.getElementById('stress-status').textContent = 'Idle';
+        document.getElementById('stress-bar').style.width = '0%';
+        log('CPU stress completed');
+      };
+    };
+
+    document.getElementById('stop-stress').onclick = () => {
+      if (stressES) stressES.close();
+      document.getElementById('start-stress').disabled = false;
+      document.getElementById('stop-stress').disabled = true;
+      document.getElementById('stress-status').textContent = 'Stopped';
+      document.getElementById('stress-bar').style.width = '0%';
+      log('CPU stress stopped by user');
+    };
+
+    log('Dashboard initialized');
+  </script>
+</body>
 </html>`;
   res.send(html);
 });
+// SSE endpoint for real-time cluster status (pods + HPA)
+app.get('/cluster-status', async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders && res.flushHeaders();
+
+  const send = (data: object) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const fetchStatus = async () => {
+    try {
+      const status: any = { pods: [], hpa: {} };
+
+      // Fetch pods
+      try {
+        const { stdout: podOut } = await exec('kubectl get pods -o json --all-namespaces');
+        const podObj = JSON.parse(podOut || '{}');
+        const items = Array.isArray(podObj.items) ? podObj.items : [];
+        
+        status.pods = items.map((p: any) => ({
+          name: p.metadata?.name || 'unknown',
+          namespace: p.metadata?.namespace || 'default',
+          phase: p.status?.phase || 'Unknown',
+          ip: p.status?.podIP || '-',
+          ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
+          restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
+          age: (() => {
+            const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
+            if (!t) return '-';
+            const s = Math.floor((Date.now() - t) / 1000);
+            if (s < 60) return s + 's';
+            if (s < 3600) return Math.floor(s / 60) + 'm';
+            return Math.floor(s / 3600) + 'h';
+          })()
+        }));
+      } catch (e) {
+        // kubectl not available or no pods
+      }
+
+      // Fetch HPA
+      try {
+        const { stdout: hpaOut } = await exec('kubectl get hpa -o json --all-namespaces');
+        const hpaObj = JSON.parse(hpaOut || '{}');
+        const hpaItems = Array.isArray(hpaObj.items) ? hpaObj.items : [];
+        
+        if (hpaItems.length > 0) {
+          const h = hpaItems[0]; // use first HPA
+          status.hpa = {
+            current: h.status?.currentReplicas || 0,
+            desired: h.status?.desiredReplicas || 0,
+            min: h.spec?.minReplicas || 1,
+            max: h.spec?.maxReplicas || 10,
+            cpu: h.status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization + '%' || '—'
+          };
+        }
+      } catch (e) {
+        // HPA not available
+      }
+
+      send(status);
+    } catch (err) {
+      send({ error: String(err) });
+    }
+  };
+
+  // Send initial status
+  await fetchStatus();
+
+  // Poll every 2 seconds
+  const interval = setInterval(async () => {
+    if (res.writableEnded) {
+      clearInterval(interval);
+      return;
+    }
+    await fetchStatus();
+  }, 2000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
   res.json({
