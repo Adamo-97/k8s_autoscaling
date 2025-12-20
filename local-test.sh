@@ -11,6 +11,7 @@
 
 set -e
 
+test_docker() {
 MODE=${1:-docker}
 
 echo "==========================================="
@@ -23,46 +24,70 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to test with Docker Compose
-test_docker() {
-    echo "Mode: Docker Compose Testing"
+# Detect container engine (docker or podman) and compose command
+CONTAINER_ENGINE=""
+COMPOSE_CMD=""
+if command_exists docker; then
+    CONTAINER_ENGINE="docker"
+    # prefer `docker compose` if available, fall back to docker-compose
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+    elif command_exists docker-compose; then
+        COMPOSE_CMD="docker-compose"
+    fi
+elif command_exists podman; then
+    CONTAINER_ENGINE="podman"
+    # podman compose (modern) or podman-compose (python)
+    if podman compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="podman compose"
+    elif command_exists podman-compose; then
+        COMPOSE_CMD="podman-compose"
+    fi
+fi
+
+# Function to test with Docker/Podman Compose
+
+    echo "Mode: Compose Testing (engine: ${CONTAINER_ENGINE:-none})"
     echo "-------------------------------------------"
-    
-    # Check Docker
-    if ! command_exists docker; then
-        echo "Error: Docker is not installed"
-        echo "Install from: https://docs.docker.com/get-docker/"
+
+    if [ -z "$CONTAINER_ENGINE" ]; then
+        echo "Error: No container engine found (docker or podman)."
+        echo "Install Docker or Podman, or run the Minikube mode instead."
         exit 1
     fi
-    
-    if ! command_exists docker-compose && ! docker compose version >/dev/null 2>&1; then
-        echo "Error: Docker Compose is not installed"
-        echo "Install from: https://docs.docker.com/compose/install/"
+
+    if [ -z "$COMPOSE_CMD" ]; then
+        echo "Error: Compose support not found for ${CONTAINER_ENGINE}."
+        if [ "$CONTAINER_ENGINE" = "docker" ]; then
+            echo "Install Docker Compose: https://docs.docker.com/compose/install/"
+        else
+            echo "Install podman-compose or enable 'podman compose' support."
+        fi
         exit 1
     fi
-    
+
     echo ""
-    echo "Step 1: Building Docker image..."
-    docker-compose build
-    
+    echo "Step 1: Building image using: ${COMPOSE_CMD} build"
+    eval ${COMPOSE_CMD} build
+
     echo ""
-    echo "Step 2: Starting container..."
-    docker-compose up -d
-    
+    echo "Step 2: Starting container(s)..."
+    eval ${COMPOSE_CMD} up -d
+
     echo ""
     echo "Step 3: Waiting for application to be ready..."
     sleep 5
-    
+
     echo ""
     echo "Step 4: Checking container status..."
-    docker-compose ps
-    
+    eval ${COMPOSE_CMD} ps
+
     echo ""
     echo "Step 5: Testing health endpoint..."
     if command_exists curl; then
         curl -f http://localhost:3000/health || echo "Health check failed"
     fi
-    
+
     echo ""
     echo "==========================================="
     echo "Application is running!"
@@ -72,11 +97,10 @@ test_docker() {
     echo ""
     echo "Test CPU stress at: http://localhost:3000/stress"
     echo ""
-    echo "To view logs: docker-compose logs -f"
-    echo "To stop: docker-compose down"
+    echo "To view logs: ${COMPOSE_CMD} logs -f"
+    echo "To stop: ${COMPOSE_CMD} down"
     echo ""
 }
-
 # Function to test with Minikube
 test_minikube() {
     echo "Mode: Minikube Kubernetes Testing"
@@ -97,7 +121,12 @@ test_minikube() {
     
     echo ""
     echo "Step 1: Starting Minikube..."
-    minikube start --driver=docker
+    # Choose Minikube driver based on available container engine
+    MINIKUBE_DRIVER="docker"
+    if [ "$CONTAINER_ENGINE" = "podman" ]; then
+        MINIKUBE_DRIVER="podman"
+    fi
+    minikube start --driver=${MINIKUBE_DRIVER}
     
     echo ""
     echo "Step 2: Enabling metrics-server addon..."
