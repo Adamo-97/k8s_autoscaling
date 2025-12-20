@@ -15,7 +15,7 @@
     "ec2",
     "hpa"
   ],
-  "author": "",
+  "author": "Adam Abdullah",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2"
@@ -25,5 +25,13 @@
     "@types/node": "^20.10.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Adamo-97/k8s_autoscaling.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Adamo-97/k8s_autoscaling/issues"
+  },
+  "homepage": "https://github.com/Adamo-97/k8s_autoscaling#readme"
 }
