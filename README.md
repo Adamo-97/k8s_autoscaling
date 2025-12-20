@@ -55,14 +55,6 @@ graph TB
     HPA -->|Query CPU Usage| MS
     HPA -->|Scale Up/Down| C1
     
-    style A fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
-    style B fill:#764ba2,stroke:#333,stroke-width:2px,color:#fff
-    style HPA fill:#f093fb,stroke:#333,stroke-width:2px
-    style MS fill:#4facfe,stroke:#333,stroke-width:2px
-    style C1 fill:#00f2fe,stroke:#333,stroke-width:2px
-    style C2 fill:#00f2fe,stroke:#333,stroke-width:2px
-    style C3 fill:#00f2fe,stroke:#333,stroke-width:2px
-    style C4 fill:#00f2fe,stroke:#333,stroke-width:2px
 ```
 
 ---
