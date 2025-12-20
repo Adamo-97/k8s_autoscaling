@@ -2,6 +2,205 @@
 
 #######################################################################
 # Local Testing Script for K8s Autoscaling Demo
+# Supports Docker (or Podman) compose and Minikube.
+# Will attempt to auto-run local setup scripts for Ubuntu/Fedora when
+# missing required tools (asks for confirmation).
+#
+# Usage: bash local-test.sh [docker|minikube]
+#######################################################################
+
+set -e
+
+MODE=${1:-docker}
+
+echo "==========================================="
+echo "   Local Testing Script"
+echo "==========================================="
+echo ""
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+detect_container_engine() {
+    CONTAINER_ENGINE=""
+    COMPOSE_CMD=""
+    if command_exists docker; then
+        CONTAINER_ENGINE="docker"
+        if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+        elif command_exists docker-compose; then
+            COMPOSE_CMD="docker-compose"
+        fi
+    elif command_exists podman; then
+        CONTAINER_ENGINE="podman"
+        if podman compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="podman compose"
+        elif command_exists podman-compose; then
+            COMPOSE_CMD="podman-compose"
+        fi
+    fi
+}
+
+detect_distro() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_ID="$ID"
+        OS_ID_LIKE="$ID_LIKE"
+    else
+        OS_ID="unknown"
+        OS_ID_LIKE=""
+    fi
+}
+
+run_local_setup() {
+    # Determine which setup script to run based on distro
+    detect_distro
+    SCRIPT=""
+    if [[ "$OS_ID" == "ubuntu" || "$OS_ID_LIKE" == *"debian"* || "$OS_ID" == "debian" ]]; then
+        SCRIPT="local-setup-ubuntu.sh"
+    elif [[ "$OS_ID" == "fedora" || "$OS_ID_LIKE" == *"fedora"* ]]; then
+        SCRIPT="local-setup-fedora.sh"
+    else
+        # default to ubuntu script if unknown
+        SCRIPT="local-setup-ubuntu.sh"
+    fi
+
+    if [ ! -x "./$SCRIPT" ]; then
+        if [ -f "./$SCRIPT" ]; then
+            chmod +x "./$SCRIPT"
+        else
+            echo "No local setup script found for your distro: $SCRIPT"
+            echo "Please run the appropriate setup script manually."
+            return 1
+        fi
+    fi
+
+    echo "About to run $SCRIPT to install required local tooling. This requires sudo. Continue? [Y/n]"
+    read -r REPLY
+    REPLY=${REPLY:-Y}
+    if [[ "$REPLY" =~ ^[Yy] ]]; then
+        sudo bash "./$SCRIPT"
+        return 0
+    else
+        echo "Skipping automated setup. Please install required tools and re-run this script."
+        return 2
+    fi
+}
+
+test_docker() {
+    echo "Mode: Compose Testing"
+    echo "-------------------------------------------"
+
+    detect_container_engine
+
+    if [ -z "$CONTAINER_ENGINE" ]; then
+        echo "No container engine detected (docker or podman)."
+        run_local_setup || exit 1
+        detect_container_engine
+    fi
+
+    if [ -z "$COMPOSE_CMD" ]; then
+        echo "No compose support detected for $CONTAINER_ENGINE."
+        run_local_setup || exit 1
+        detect_container_engine
+    fi
+
+    if [ -z "$CONTAINER_ENGINE" ] || [ -z "$COMPOSE_CMD" ]; then
+        echo "Compose testing cannot proceed. Ensure Docker/Podman and compose are installed."
+        exit 1
+    fi
+
+    echo "Using engine: $CONTAINER_ENGINE, compose command: $COMPOSE_CMD"
+
+    echo "Step 1: Building image using: ${COMPOSE_CMD} build"
+    eval ${COMPOSE_CMD} build
+
+    echo "Step 2: Starting container(s)..."
+    eval ${COMPOSE_CMD} up -d
+
+    echo "Waiting for application to be ready..."
+    sleep 5
+
+    echo "Container status:"
+    eval ${COMPOSE_CMD} ps
+
+    echo "Testing health endpoint..."
+    if command_exists curl; then
+        curl -f http://localhost:3000/health || echo "Health check failed"
+    fi
+
+    echo "Application is running at http://localhost:3000"
+    echo "To stop: ${COMPOSE_CMD} down"
+}
+
+test_minikube() {
+    echo "Mode: Minikube Kubernetes Testing"
+    echo "-------------------------------------------"
+
+    # ensure tools
+    if ! command_exists minikube || ! command_exists kubectl; then
+        echo "Minikube or kubectl missing. Attempt automated setup?"
+        run_local_setup || exit 1
+    fi
+
+    if ! command_exists minikube || ! command_exists kubectl; then
+        echo "Required tools for Minikube are still missing. Aborting."
+        exit 1
+    fi
+
+    detect_container_engine
+    MINIKUBE_DRIVER="docker"
+    if [ "$CONTAINER_ENGINE" = "podman" ]; then
+        MINIKUBE_DRIVER="podman"
+    fi
+
+    echo "Starting Minikube with driver: $MINIKUBE_DRIVER"
+    minikube start --driver=${MINIKUBE_DRIVER}
+    minikube addons enable metrics-server
+
+    echo "Building image inside Minikube..."
+    eval $(minikube docker-env)
+    docker build -t k8s-autoscaling-demo:latest .
+
+    echo "Preparing k8s manifests for local image..."
+    sed 's|YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest|k8s-autoscaling-demo:latest|g' k8s-app.yaml > k8s-app-local.yaml
+    sed -i '/imagePullPolicy/d' k8s-app-local.yaml || true
+    sed -i '/image: k8s-autoscaling-demo:latest/a\        imagePullPolicy: Never' k8s-app-local.yaml || true
+
+    kubectl apply -f k8s-app-local.yaml
+    kubectl apply -f k8s-hpa.yaml
+
+    kubectl wait --for=condition=ready pod -l app=k8s-autoscaling --timeout=120s
+
+    echo "Deployment status:"
+    kubectl get deployments
+    kubectl get pods
+    kubectl get svc
+    kubectl get hpa
+
+    echo "Waiting for metrics to be available (about 60s)"
+    sleep 60
+
+    SERVICE_URL=$(minikube service k8s-autoscaling-service --url)
+    echo "Application available at: $SERVICE_URL"
+    echo "Generate load: for i in {1..20}; do curl $SERVICE_URL/stress & done"
+}
+
+case "$MODE" in
+    docker)
+        test_docker
+        ;;
+    minikube)
+        test_minikube
+        ;;
+    *)
+        echo "Usage: $0 [docker|minikube]"
+        exit 1
+        ;;
+esac
+#!/bin/bash
+
+#######################################################################
+# Local Testing Script for K8s Autoscaling Demo
 # This script helps you test the application locally using:
 # - Docker Compose for simple testing
 # - Minikube for full Kubernetes testing with HPA
