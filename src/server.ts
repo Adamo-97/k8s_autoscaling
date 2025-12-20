@@ -185,6 +185,73 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
   res.end();
 });
 
+// Pods overview page — uses `kubectl` if available to list pods and render cards
+app.get('/pods', async (req: Request, res: Response) => {
+  try {
+    const { stdout } = await exec('kubectl get pods -o json --all-namespaces');
+    const obj = JSON.parse(stdout || '{}');
+    const items = Array.isArray(obj.items) ? obj.items : [];
+
+    const cards = items.map((p: any) => {
+      const name = p.metadata?.name || 'unknown';
+      const ns = p.metadata?.namespace || 'default';
+      const phase = p.status?.phase || 'Unknown';
+      const podIP = p.status?.podIP || '-';
+      const containers = p.status?.containerStatuses || [];
+      const ready = containers.filter((c: any) => c.ready).length + '/' + (containers.length || 0);
+      const restarts = containers.reduce((s: number, c: any) => s + (c.restartCount || 0), 0);
+      const age = (() => {
+        const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
+        if (!t) return '-';
+        const s = Math.floor((Date.now() - t) / 1000);
+        if (s < 60) return s + 's';
+        if (s < 3600) return Math.floor(s/60) + 'm';
+        return Math.floor(s/3600) + 'h';
+      })();
+
+      return `
+        <div class="card">
+          <div class="title">${name}</div>
+          <div class="meta">NS: ${ns} · IP: ${podIP} · Age: ${age}</div>
+          <div class="status ${phase.toLowerCase()}">Status: ${phase}</div>
+          <div class="meta">Ready: ${ready} · Restarts: ${restarts}</div>
+        </div>
+      `;
+    }).join('\n');
+
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pods</title>
+  <style>
+    body{margin:16px;font-family:monospace;background:#071018;color:#e6eef3}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    .card{background:rgba(255,255,255,0.03);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.02)}
+    .title{font-weight:700;margin-bottom:6px}
+    .meta{font-size:13px;color:#9aa6b2;margin-bottom:6px}
+    .status{padding:6px;border-radius:6px;font-weight:600}
+    .status.running{background:rgba(110,231,183,0.06);color:#6ee7b7}
+    .status.pending{background:rgba(245,158,11,0.06);color:#f59e0b}
+    .status.failed{background:rgba(239,68,68,0.06);color:#f87171}
+  </style>
+</head>
+<body>
+  <h1>Pods (from kubectl)</h1>
+  <p style="color:#9aa6b2">This page uses the server's <code>kubectl</code> command — ensure your kubeconfig is accessible.</p>
+  <div class="grid">${cards}</div>
+  <p style="margin-top:12px;color:#9aa6b2"><a href="/" style="color:#6ee7b7">Back</a></p>
+</body>
+</html>`;
+
+    res.send(html);
+  } catch (err: any) {
+    const message = String(err.message || err);
+    res.send(`<!doctype html><html><body><h1>Pods</h1><p>kubectl failed: ${message}</p><p>Make sure kubectl is installed and kubeconfig is accessible to the server process.</p><p><a href="/">Back</a></p></body></html>`);
+  }
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`[SERVER] Running on port ${PORT}`);
