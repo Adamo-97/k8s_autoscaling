@@ -183,9 +183,14 @@ test_minikube() {
         rm /tmp/k8s-app.tar
         IMAGE_NAME="localhost/k8s-autoscaling-demo:latest"
     else
-        # Docker: use docker-env
-        eval $(minikube docker-env)
-        docker build -t k8s-autoscaling-demo:latest .
+        # Docker: prefer `minikube image build` (works with containerd/docker runtimes)
+        if minikube image build --help >/dev/null 2>&1; then
+            minikube image build -t k8s-autoscaling-demo:latest .
+        else
+            # Fallback: try to point docker to minikube's daemon (experimental with containerd)
+            eval $(minikube docker-env) || true
+            docker build -t k8s-autoscaling-demo:latest .
+        fi
         IMAGE_NAME="k8s-autoscaling-demo:latest"
     fi
 
