@@ -2,7 +2,14 @@ import express, { Request, Response } from 'express';
 import os from 'os';
 import { promisify } from 'util';
 import { exec as _exec } from 'child_process';
+import http from 'http';
+import https from 'https';
+import { KubeConfig, CoreV1Api, AutoscalingV1Api } from '@kubernetes/client-node';
 const exec = promisify(_exec);
+
+// Node 18+ has global fetch, but ensure agents for keepalive
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -167,30 +174,24 @@ app.get('/', (req: Request, res: Response) => {
       document.getElementById('stress-status').textContent = 'Running';
       log('CPU stress started');
 
-      stressES.onmessage = (ev) => {
-        try {
-          const d = JSON.parse(ev.data);
-          document.getElementById('stress-bar').style.width = d.progress + '%';
-          document.getElementById('stress-status').textContent = 'Running (' + d.progress + '%)';
-        } catch(e) {}
-      };
-      stressES.onerror = () => {
-        stressES.close();
-        document.getElementById('start-stress').disabled = false;
-        document.getElementById('stop-stress').disabled = true;
-        document.getElementById('stress-status').textContent = 'Idle';
-        document.getElementById('stress-bar').style.width = '0%';
-        log('CPU stress completed');
-      };
+        // Instead of streaming from a single pod, call the server to generate distributed load
+        fetch('/generate-load', { method: 'POST' }).then(() => {
+          document.getElementById('start-stress').disabled = true;
+          document.getElementById('stop-stress').disabled = false;
+          document.getElementById('stress-status').textContent = 'Load started';
+          document.getElementById('stress-bar').style.width = '100%';
+        }).catch(() => {
+          document.getElementById('stress-status').textContent = 'Error starting load';
+        });
     };
 
     document.getElementById('stop-stress').onclick = () => {
-      if (stressES) stressES.close();
+      // We cannot stop remote /cpu-load once started; just update UI
       document.getElementById('start-stress').disabled = false;
       document.getElementById('stop-stress').disabled = true;
       document.getElementById('stress-status').textContent = 'Stopped';
       document.getElementById('stress-bar').style.width = '0%';
-      log('CPU stress stopped by user');
+      log('CPU stress stop requested (best-effort)');
     };
 
     log('Dashboard initialized');
@@ -214,12 +215,20 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
     try {
       const status: any = { pods: [], hpa: {} };
 
-      // Fetch pods
+      // Try in-cluster config first, fall back to kubectl if not available
       try {
-        const { stdout: podOut } = await exec('kubectl get pods -o json --all-namespaces');
-        const podObj = JSON.parse(podOut || '{}');
-        const items = Array.isArray(podObj.items) ? podObj.items : [];
-        
+        const kc = new KubeConfig();
+        try {
+          kc.loadFromCluster();
+        } catch (err) {
+          kc.loadFromDefault();
+        }
+        const k8sApi = kc.makeApiClient(CoreV1Api);
+        const hpaApi = kc.makeApiClient(AutoscalingV1Api);
+
+        // list pods in same namespace (default) and all namespaces if allowed
+        const podsResp = await k8sApi.listPodForAllNamespaces();
+        const items = Array.isArray(podsResp.body.items) ? podsResp.body.items : [];
         status.pods = items.map((p: any) => ({
           name: p.metadata?.name || 'unknown',
           namespace: p.metadata?.namespace || 'default',
@@ -236,28 +245,49 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
             return Math.floor(s / 3600) + 'h';
           })()
         }));
-      } catch (e) {
-        // kubectl not available or no pods
-      }
 
-      // Fetch HPA
-      try {
-        const { stdout: hpaOut } = await exec('kubectl get hpa -o json --all-namespaces');
-        const hpaObj = JSON.parse(hpaOut || '{}');
-        const hpaItems = Array.isArray(hpaObj.items) ? hpaObj.items : [];
-        
-        if (hpaItems.length > 0) {
-          const h = hpaItems[0]; // use first HPA
-          status.hpa = {
-            current: h.status?.currentReplicas || 0,
-            desired: h.status?.desiredReplicas || 0,
-            min: h.spec?.minReplicas || 1,
-            max: h.spec?.maxReplicas || 10,
-            cpu: h.status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization + '%' || '—'
-          };
+        // list HPA (v1) - may not exist
+        try {
+          const hpaResp = await hpaApi.listHorizontalPodAutoscalerForAllNamespaces();
+          const hpaItems = Array.isArray(hpaResp.body.items) ? hpaResp.body.items : [];
+          if (hpaItems.length > 0) {
+            const h = hpaItems[0];
+            status.hpa = {
+              current: h.status?.currentReplicas || 0,
+              desired: h.status?.desiredReplicas || 0,
+              min: h.spec?.minReplicas || 1,
+              max: h.spec?.maxReplicas || 10,
+              cpu: ((h as any).status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization ? String((h as any).status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization) + '%' : '—')
+            };
+          }
+        } catch (e) {
+          // ignore HPA errors
         }
-      } catch (e) {
-        // HPA not available
+      } catch (err) {
+        // Fallback: try kubectl shell (useful for local dev when kubeconfig is present)
+        try {
+          const { stdout: podOut } = await exec('kubectl get pods -o json --all-namespaces');
+          const podObj = JSON.parse(podOut || '{}');
+          const items = Array.isArray(podObj.items) ? podObj.items : [];
+          status.pods = items.map((p: any) => ({
+            name: p.metadata?.name || 'unknown',
+            namespace: p.metadata?.namespace || 'default',
+            phase: p.status?.phase || 'Unknown',
+            ip: p.status?.podIP || '-',
+            ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
+            restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
+            age: (() => {
+              const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
+              if (!t) return '-';
+              const s = Math.floor((Date.now() - t) / 1000);
+              if (s < 60) return s + 's';
+              if (s < 3600) return Math.floor(s/60) + 'm';
+              return Math.floor(s/3600) + 'h';
+            })()
+          }));
+        } catch (e) {
+          // give up; status.pods stays empty
+        }
       }
 
       send(status);
@@ -376,6 +406,56 @@ app.get('/stress', (req: Request, res: Response) => {
 </body>
 </html>`;
   res.send(html);
+});
+
+// Endpoint to trigger distributed load across pods
+app.post('/generate-load', async (req: Request, res: Response) => {
+  const concurrency = 20;
+
+  // Get pod IPs for app label
+  let podIps: string[] = [];
+  try {
+    const kc = new KubeConfig();
+    try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
+    const k8sApi = kc.makeApiClient(CoreV1Api);
+    const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
+    podIps = (podsResp.body.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+  } catch (err) {
+    try {
+      const { stdout } = await exec("kubectl get pods -l app=k8s-autoscaling -o json -n default");
+      const obj = JSON.parse(stdout || '{}');
+      podIps = (obj.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // fallback to service clusterIP if no pod IPs found
+  if (!podIps.length) {
+    try {
+      const kc = new KubeConfig();
+      try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
+      const core = kc.makeApiClient(CoreV1Api);
+      const s = await core.readNamespacedService('k8s-autoscaling-service','default');
+      const clusterIP = s.body.spec?.clusterIP;
+      if (clusterIP) podIps = [clusterIP];
+    } catch {}
+  }
+
+  // Fire concurrent requests to /cpu-load on each target
+  (async () => {
+    const targets = podIps.length ? podIps : ['127.0.0.1'];
+    const tasks: Promise<any>[] = [];
+    for (let i = 0; i < concurrency; i++) {
+      const target = targets[i % targets.length];
+      const url = `http://${target}:3000/cpu-load`;
+      const p = (fetch as any)(url, { method: 'GET' }).catch(() => null);
+      tasks.push(p);
+    }
+    try { await Promise.all(tasks); } catch {}
+  })();
+
+  res.status(202).json({ status: 'started', targets: podIps.length || ['service'], concurrency });
 });
 
 // SSE endpoint that runs CPU work and streams progress

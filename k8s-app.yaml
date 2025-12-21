@@ -15,6 +15,7 @@ spec:
       labels:
         app: k8s-autoscaling
     spec:
+      serviceAccountName: dashboard-sa
       containers:
       - name: app
         image: YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest
