@@ -12,3 +12,4 @@ coverage/
 *.swo
 *~
 k8s-app-local.yaml
+.github/copilot-instructions.md
