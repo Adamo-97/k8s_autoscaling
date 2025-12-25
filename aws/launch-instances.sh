@@ -16,25 +16,25 @@ KEY_NAME="$6"
 SG_ID="$7"
 
 if [ -z "$AMI_ID" ] || [ -z "$KEY_NAME" ] || [ -z "$SG_ID" ]; then
-    echo "[ERROR] Missing required parameters"
-    echo "Usage: $0 CLUSTER_NAME REGION INSTANCE_TYPE COUNT AMI_ID KEY_NAME SG_ID"
+    echo "[ERROR] Missing required parameters" >&2
+    echo "Usage: $0 CLUSTER_NAME REGION INSTANCE_TYPE COUNT AMI_ID KEY_NAME SG_ID" >&2
     exit 1
 fi
 
-echo "[AWS] Launching $INSTANCE_COUNT EC2 instances..."
-echo "      Instance Type: $INSTANCE_TYPE"
-echo "      AMI: $AMI_ID"
-echo "      Security Group: $SG_ID"
-echo "      Key Name: $KEY_NAME"
+echo "[AWS] Launching $INSTANCE_COUNT EC2 instances..." >&2
+echo "      Instance Type: $INSTANCE_TYPE" >&2
+echo "      AMI: $AMI_ID" >&2
+echo "      Security Group: $SG_ID" >&2
+echo "      Key Name: $KEY_NAME" >&2
 
 # Check if setup_aws_node.sh exists
 if [ ! -f "setup_aws_node.sh" ]; then
-    echo "[ERROR] setup_aws_node.sh not found in current directory"
+    echo "[ERROR] setup_aws_node.sh not found in current directory" >&2
     exit 1
 fi
 
 # Launch instances
-echo "[INFO] Launching instances with user data script..."
+echo "[INFO] Launching instances with user data script..." >&2
 INSTANCE_IDS=$(aws ec2 run-instances \
     --region "$REGION" \
     --image-id "$AMI_ID" \
@@ -49,28 +49,28 @@ INSTANCE_IDS=$(aws ec2 run-instances \
     --output text)
 
 if [ -z "$INSTANCE_IDS" ]; then
-    echo "[ERROR] Failed to launch instances"
+    echo "[ERROR] Failed to launch instances" >&2
     exit 1
 fi
 
-echo "[OK] Launched instances: $INSTANCE_IDS"
+echo "[OK] Launched instances: $INSTANCE_IDS" >&2
 
 # Wait for instances to reach running state
-echo "[INFO] Waiting for instances to reach 'running' state..."
-echo "       This typically takes 30-60 seconds..."
+echo "[INFO] Waiting for instances to reach 'running' state..." >&2
+echo "       This typically takes 30-60 seconds..." >&2
 
 if ! aws ec2 wait instance-running \
     --region "$REGION" \
     --instance-ids $INSTANCE_IDS; then
-    echo "[ERROR] Timeout waiting for instances to start"
+    echo "[ERROR] Timeout waiting for instances to start" >&2
     exit 1
 fi
 
-echo "[OK] All instances are now running"
+echo "[OK] All instances are now running" >&2
 
 # Wait additional time for system status checks
-echo "[INFO] Waiting for system status checks to pass..."
-echo "       This typically takes 2-3 minutes..."
+echo "[INFO] Waiting for system status checks to pass..." >&2
+echo "       This typically takes 2-3 minutes..." >&2
 
 WAIT_START=$(date +%s)
 TIMEOUT=300  # 5 minutes
@@ -84,39 +84,39 @@ while true; do
         --output text 2>/dev/null || echo "")
     
     if [ -z "$STATUS" ]; then
-        echo "[WAIT] Status checks not available yet..."
+        echo "[WAIT] Status checks not available yet..." >&2
         sleep 10
         continue
     fi
     
     # Count how many instances are fully OK
-    OK_COUNT=$(echo "$STATUS" | grep -c "ok.*ok" || echo "0")
+    OK_COUNT=$(echo "$STATUS" | grep -o "ok.*ok" | wc -l)
     
     if [ "$OK_COUNT" -eq "$INSTANCE_COUNT" ]; then
-        echo "[OK] All system status checks passed"
+        echo "[OK] All system status checks passed" >&2
         break
     fi
     
     # Check timeout
     ELAPSED=$(($(date +%s) - WAIT_START))
     if [ $ELAPSED -gt $TIMEOUT ]; then
-        echo "[WARNING] Timeout waiting for status checks (${TIMEOUT}s exceeded)"
-        echo "[WARNING] Instances may still be initializing. Check AWS console."
+        echo "[WARNING] Timeout waiting for status checks (${TIMEOUT}s exceeded)" >&2
+        echo "[WARNING] Instances may still be initializing. Check AWS console." >&2
         break
     fi
     
-    echo "[WAIT] Status checks: $OK_COUNT/$INSTANCE_COUNT passed (${ELAPSED}s elapsed)"
+    echo "[WAIT] Status checks: $OK_COUNT/$INSTANCE_COUNT passed (${ELAPSED}s elapsed)" >&2
     sleep 15
 done
 
 # Wait for user data script to complete (background setup)
-echo "[INFO] Waiting for user data script (setup_aws_node.sh) to complete..."
-echo "       This typically takes 3-5 minutes..."
-echo "       Progress: Installing containerd, kubeadm, kubelet, kubectl..."
+echo "[INFO] Waiting for user data script (setup_aws_node.sh) to complete..." >&2
+echo "       This typically takes 3-5 minutes..." >&2
+echo "       Progress: Installing containerd, kubeadm, kubelet, kubectl..." >&2
 
 sleep 180  # Give it 3 minutes minimum
 
-echo "[OK] Background setup should be complete or nearly complete"
+echo "[OK] Background setup should be complete or nearly complete" >&2
 
 # Output instance IDs for calling script
 echo "$INSTANCE_IDS"

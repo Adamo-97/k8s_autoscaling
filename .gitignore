@@ -13,3 +13,4 @@ coverage/
 *~
 k8s-app-local.yaml
 .github/copilot-instructions.md
+k8s-autoscaling-demo-key.pem
