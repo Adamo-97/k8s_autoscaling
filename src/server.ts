@@ -39,9 +39,13 @@ app.get('/', (req: Request, res: Response) => {
     .stat{display:flex;justify-content:space-between;margin:6px 0;font-size:13px}
     .stat .label{color:var(--muted)}
     .stat .value{color:var(--accent);font-weight:700}
-    .pod-card{background:var(--card);padding:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:8px;transition:all 0.3s}
-    .pod-card.new{animation:highlight 1s ease-out;border-color:var(--accent)}
-    @keyframes highlight{from{background:rgba(110,231,183,0.15)}to{background:var(--card)}}
+    .pod-card{background:var(--card);padding:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);margin-bottom:8px;transition:all 0.3s;position:relative}
+    .pod-card.new{animation:highlight 2s ease-out;border-color:var(--accent)}
+    .pod-card.scaling-up{border-color:#f59e0b;animation:pulse 1s infinite}
+    @keyframes highlight{from{background:rgba(110,231,183,0.2)}to{background:var(--card)}}
+    @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0.4)}50%{box-shadow:0 0 0 8px rgba(245,158,11,0)}}
+    .badge{position:absolute;top:-6px;right:-6px;background:var(--accent);color:#000;font-size:9px;padding:2px 6px;border-radius:10px;font-weight:700}
+    .badge.new{background:#f59e0b}
     .pod-card .name{font-weight:700;margin-bottom:4px;font-size:13px}
     .pod-card .meta{font-size:11px;color:var(--muted);margin:2px 0}
     .status{display:inline-block;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600}
@@ -69,11 +73,12 @@ app.get('/', (req: Request, res: Response) => {
       <div class="card">
         <h3>HPA Status</h3>
         <div id="hpa-status">
-          <div class="stat"><span class="label">Current Replicas</span><span class="value" id="current-replicas">—</span></div>
-          <div class="stat"><span class="label">Desired Replicas</span><span class="value" id="desired-replicas">—</span></div>
+          <div class="stat"><span class="label">Scaling Progress</span><span class="value" id="scaling-progress">—</span></div>
+          <div class="stat"><span class="label">Current / Desired</span><span class="value" id="current-desired">— / —</span></div>
           <div class="stat"><span class="label">Min / Max</span><span class="value" id="min-max">—</span></div>
           <div class="stat"><span class="label">CPU Usage</span><span class="value" id="cpu-usage">—</span></div>
         </div>
+        <div class="bar"><div id="scaling-bar" style="width:0%;background:linear-gradient(90deg,#f59e0b,var(--accent))"></div></div>
       </div>
 
       <div class="card">
@@ -81,7 +86,7 @@ app.get('/', (req: Request, res: Response) => {
         <div class="stat"><span class="label">Status</span><span class="value" id="stress-status">Idle</span></div>
         <div class="bar"><div id="stress-bar" style="width:0%"></div></div>
         <div class="controls">
-          <button id="start-stress">Start CPU Load (30s)</button>
+          <button id="start-stress">Start CPU Load (60s)</button>
           <button id="stop-stress" disabled>Stop</button>
         </div>
       </div>
@@ -106,6 +111,10 @@ app.get('/', (req: Request, res: Response) => {
     let stressES, clusterES;
     const startTime = Date.now();
     const knownPods = new Set();
+    const podCreationTimes = new Map();
+    let initialReplicas = null;
+    let peakReplicas = 0;
+    let lastReplicaCount = 0;
 
     function log(msg) {
       const logs = document.getElementById('logs');
@@ -131,24 +140,64 @@ app.get('/', (req: Request, res: Response) => {
           
           // HPA
           if (data.hpa) {
-            document.getElementById('current-replicas').textContent = data.hpa.current || '—';
-            document.getElementById('desired-replicas').textContent = data.hpa.desired || '—';
-            document.getElementById('min-max').textContent = (data.hpa.min || '—') + ' / ' + (data.hpa.max || '—');
+            const current = data.hpa.current || 0;
+            const desired = data.hpa.desired || 0;
+            const min = data.hpa.min || 1;
+            const max = data.hpa.max || 10;
+            
+            // Track scaling progress
+            if (initialReplicas === null && current > 0) {
+              initialReplicas = current;
+              log('Initial replica count: ' + initialReplicas);
+            }
+            if (current > peakReplicas) {
+              peakReplicas = current;
+            }
+            
+            // Detect scaling events
+            if (current !== lastReplicaCount && lastReplicaCount > 0) {
+              if (current > lastReplicaCount) {
+                log('+++++++++++ SCALING UP: ' + lastReplicaCount + ' → ' + current + ' replicas');
+              } else {
+                log('----------- SCALING DOWN: ' + lastReplicaCount + ' → ' + current + ' replicas');
+              }
+            }
+            lastReplicaCount = current;
+            
+            // Update display
+            const scalingText = initialReplicas !== null ? 
+              'Started: ' + initialReplicas + ' → Peak: ' + peakReplicas + ' → Now: ' + current : '—';
+            document.getElementById('scaling-progress').textContent = scalingText;
+            document.getElementById('current-desired').textContent = current + ' / ' + desired;
+            document.getElementById('min-max').textContent = min + ' / ' + max;
             document.getElementById('cpu-usage').textContent = data.hpa.cpu || '—';
+            
+            // Scaling bar shows progress from min to max
+            const scalingPercent = Math.min(100, Math.max(0, ((current - min) / (max - min)) * 100));
+            document.getElementById('scaling-bar').style.width = scalingPercent + '%';
           }
 
           // Pods
           if (data.pods) {
             const grid = document.getElementById('pods-grid');
             document.getElementById('pod-count').textContent = data.pods.length;
+            const now = Date.now();
             
             grid.innerHTML = data.pods.map(p => {
               const isNew = !knownPods.has(p.name);
+              const isRecent = p.ageSeconds < 60; // Less than 60 seconds old
+              
               if (isNew) {
                 knownPods.add(p.name);
-                log('New pod detected: ' + p.name);
+                podCreationTimes.set(p.name, now);
+                log('[[POD]] New pod created: ' + p.name);
               }
-              return \`<div class="pod-card \${isNew ? 'new' : ''}">
+              
+              const cardClass = isRecent ? 'pod-card scaling-up' : 'pod-card';
+              const badge = isRecent ? '<span class="badge new">NEW</span>' : '';
+              
+              return \`<div class="\${cardClass}">
+                \${badge}
                 <div class="name">\${p.name}</div>
                 <div class="meta">IP: \${p.ip} · Age: \${p.age}</div>
                 <div class="meta">Ready: \${p.ready} · Restarts: \${p.restarts}</div>
@@ -180,10 +229,10 @@ app.get('/', (req: Request, res: Response) => {
           document.getElementById('stop-stress').disabled = false;
           document.getElementById('stress-status').textContent = 'Load started';
           
-          // Animate progress bar over 30 seconds
+          // Animate progress bar over 60 seconds
           let progress = 0;
           const interval = setInterval(() => {
-            progress += 100 / 30; // Increment every second for 30 seconds
+            progress += 100 / 60; // Increment every second for 60 seconds
             if (progress >= 100) {
               progress = 100;
               clearInterval(interval);
@@ -249,22 +298,25 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
         // list pods in same namespace (default) with app label only
         const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
         const items = Array.isArray(podsResp.body.items) ? podsResp.body.items : [];
-        status.pods = items.map((p: any) => ({
-          name: p.metadata?.name || 'unknown',
-          namespace: p.metadata?.namespace || 'default',
-          phase: p.status?.phase || 'Unknown',
-          ip: p.status?.podIP || '-',
-          ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
-          restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
-          age: (() => {
-            const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
-            if (!t) return '-';
-            const s = Math.floor((Date.now() - t) / 1000);
-            if (s < 60) return s + 's';
-            if (s < 3600) return Math.floor(s / 60) + 'm';
-            return Math.floor(s / 3600) + 'h';
-          })()
-        }));
+        status.pods = items.map((p: any) => {
+          const creationTime = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
+          const ageSeconds = creationTime ? Math.floor((Date.now() - creationTime) / 1000) : 9999;
+          return {
+            name: p.metadata?.name || 'unknown',
+            namespace: p.metadata?.namespace || 'default',
+            phase: p.status?.phase || 'Unknown',
+            ip: p.status?.podIP || '-',
+            ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
+            restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
+            ageSeconds,
+            age: (() => {
+              if (ageSeconds === 9999) return '-';
+              if (ageSeconds < 60) return ageSeconds + 's';
+              if (ageSeconds < 3600) return Math.floor(ageSeconds / 60) + 'm';
+              return Math.floor(ageSeconds / 3600) + 'h';
+            })()
+          };
+        });
 
         // list HPA (v1) in default namespace
         try {
@@ -430,7 +482,8 @@ app.get('/stress', (req: Request, res: Response) => {
 
 // Endpoint to trigger distributed load across pods
 app.post('/generate-load', async (req: Request, res: Response) => {
-  const concurrency = 20;
+  const concurrency = 50; // Increased from 20 for more load
+  const rounds = 6; // Run 6 rounds of 10 seconds each = 60 seconds total
 
   // Get pod IPs for app label
   let podIps: string[] = [];
@@ -462,20 +515,22 @@ app.post('/generate-load', async (req: Request, res: Response) => {
     } catch {}
   }
 
-  // Fire concurrent requests to /cpu-load on each target
+  // Fire concurrent requests to /cpu-load on each target in multiple rounds
   (async () => {
     const targets = podIps.length ? podIps : ['127.0.0.1'];
-    const tasks: Promise<any>[] = [];
-    for (let i = 0; i < concurrency; i++) {
-      const target = targets[i % targets.length];
-      const url = `http://${target}:3000/cpu-load`;
-      const p = (fetch as any)(url, { method: 'GET' }).catch(() => null);
-      tasks.push(p);
+    for (let round = 0; round < rounds; round++) {
+      const tasks: Promise<any>[] = [];
+      for (let i = 0; i < concurrency; i++) {
+        const target = targets[i % targets.length];
+        const url = `http://${target}:3000/cpu-load`;
+        const p = (fetch as any)(url, { method: 'GET' }).catch(() => null);
+        tasks.push(p);
+      }
+      try { await Promise.all(tasks); } catch {}
     }
-    try { await Promise.all(tasks); } catch {}
   })();
 
-  res.status(202).json({ status: 'started', targets: podIps.length || ['service'], concurrency });
+  res.status(202).json({ status: 'started', targets: podIps.length || ['service'], concurrency, rounds });
 });
 
 // SSE endpoint that runs CPU work and streams progress
@@ -484,11 +539,11 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   const start = Date.now();
   let result = 0;
   
-  // Perform intensive CPU work for about 5 seconds (enough to trigger HPA but not kill pod)
-  const duration = 5000;
+  // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
+  const duration = 10000;
   while (Date.now() - start < duration) {
-    for (let i = 0; i < 500000; i++) {
-      result += Math.sqrt(i) * Math.sin(i) * Math.cos(i);
+    for (let i = 0; i < 1000000; i++) {  // Increased iterations for more CPU usage
+      result += Math.sqrt(i) * Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
     }
   }
   

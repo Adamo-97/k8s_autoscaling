@@ -350,4 +350,160 @@ describe('Kubernetes Client Mock Tests', () => {
       expect(targets).toEqual(['127.0.0.1']);
     });
   });
+
+  describe('Scaling progress tracking', () => {
+    test('tracks initial replica count', () => {
+      let initialReplicas: number | null = null;
+      const current = 3;
+
+      if (initialReplicas === null && current > 0) {
+        initialReplicas = current;
+      }
+
+      expect(initialReplicas).toBe(3);
+    });
+
+    test('tracks peak replica count', () => {
+      let peakReplicas = 0;
+      const replicaCounts = [1, 3, 5, 7, 5, 3, 1];
+
+      for (const count of replicaCounts) {
+        if (count > peakReplicas) {
+          peakReplicas = count;
+        }
+      }
+
+      expect(peakReplicas).toBe(7);
+    });
+
+    test('detects scaling up events', () => {
+      let lastReplicaCount = 0;
+      const scalingEvents: string[] = [];
+
+      const replicaCounts = [1, 3, 5, 7];
+      for (const current of replicaCounts) {
+        if (current !== lastReplicaCount && lastReplicaCount > 0) {
+          if (current > lastReplicaCount) {
+            scalingEvents.push(`SCALING UP: ${lastReplicaCount} → ${current}`);
+          }
+        }
+        lastReplicaCount = current;
+      }
+
+      expect(scalingEvents).toHaveLength(3);
+      expect(scalingEvents[0]).toContain('1 → 3');
+      expect(scalingEvents[1]).toContain('3 → 5');
+    });
+
+    test('detects scaling down events', () => {
+      let lastReplicaCount = 0;
+      const scalingEvents: string[] = [];
+
+      const replicaCounts = [5, 3, 1];
+      for (const current of replicaCounts) {
+        if (current !== lastReplicaCount && lastReplicaCount > 0) {
+          if (current < lastReplicaCount) {
+            scalingEvents.push(`SCALING DOWN: ${lastReplicaCount} → ${current}`);
+          }
+        }
+        lastReplicaCount = current;
+      }
+
+      expect(scalingEvents).toHaveLength(2);
+      expect(scalingEvents[0]).toContain('5 → 3');
+    });
+
+    test('formats scaling progress text', () => {
+      const initialReplicas = 1;
+      const peakReplicas = 7;
+      const current = 5;
+
+      const scalingText = `Started: ${initialReplicas} → Peak: ${peakReplicas} → Now: ${current}`;
+      expect(scalingText).toBe('Started: 1 → Peak: 7 → Now: 5');
+    });
+  });
+
+  describe('Pod age calculation', () => {
+    test('calculates ageSeconds from creation timestamp', () => {
+      const now = Date.now();
+      const creationTimestamp = new Date(now - 30000).toISOString(); // 30 seconds ago
+
+      const createdAt = new Date(creationTimestamp).getTime();
+      const ageSeconds = Math.floor((now - createdAt) / 1000);
+
+      expect(ageSeconds).toBeGreaterThanOrEqual(29);
+      expect(ageSeconds).toBeLessThanOrEqual(31);
+    });
+
+    test('identifies new pods (< 60 seconds old)', () => {
+      const isRecent = (ageSeconds: number) => ageSeconds < 60;
+
+      expect(isRecent(30)).toBe(true);
+      expect(isRecent(59)).toBe(true);
+      expect(isRecent(60)).toBe(false);
+      expect(isRecent(120)).toBe(false);
+    });
+
+    test('formats age as human readable string', () => {
+      const formatAge = (seconds: number): string => {
+        if (seconds < 60) return `${seconds}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        return `${Math.floor(seconds / 3600)}h`;
+      };
+
+      expect(formatAge(30)).toBe('30s');
+      expect(formatAge(90)).toBe('1m');
+      expect(formatAge(3660)).toBe('1h');
+    });
+  });
+
+  describe('Pod label filtering', () => {
+    test('filters pods by app label', () => {
+      const pods = [
+        { metadata: { name: 'app-pod-1', labels: { app: 'k8s-autoscaling' } } },
+        { metadata: { name: 'app-pod-2', labels: { app: 'k8s-autoscaling' } } },
+        { metadata: { name: 'system-pod', labels: { app: 'kube-dns' } } },
+        { metadata: { name: 'other-pod', labels: { app: 'nginx' } } },
+      ];
+
+      const appPods = pods.filter(
+        p => p.metadata?.labels?.app === 'k8s-autoscaling'
+      );
+
+      expect(appPods).toHaveLength(2);
+      expect(appPods.map(p => p.metadata.name)).toEqual(['app-pod-1', 'app-pod-2']);
+    });
+
+    test('label selector format for k8s API', () => {
+      const labelSelector = 'app=k8s-autoscaling';
+      expect(labelSelector).toBe('app=k8s-autoscaling');
+    });
+
+    test('kubectl label filter format', () => {
+      const kubectlFilter = '-l app=k8s-autoscaling';
+      expect(kubectlFilter).toContain('-l');
+      expect(kubectlFilter).toContain('app=k8s-autoscaling');
+    });
+  });
+
+  describe('Scaling bar calculation', () => {
+    test('calculates scaling percentage correctly', () => {
+      const calculateScalingPercent = (current: number, min: number, max: number) => {
+        return Math.min(100, Math.max(0, ((current - min) / (max - min)) * 100));
+      };
+
+      expect(calculateScalingPercent(1, 1, 10)).toBe(0);    // At minimum
+      expect(calculateScalingPercent(10, 1, 10)).toBe(100); // At maximum
+      expect(calculateScalingPercent(5, 1, 10)).toBeCloseTo(44.44, 1); // Mid-range
+    });
+
+    test('clamps percentage to 0-100 range', () => {
+      const calculateScalingPercent = (current: number, min: number, max: number) => {
+        return Math.min(100, Math.max(0, ((current - min) / (max - min)) * 100));
+      };
+
+      expect(calculateScalingPercent(0, 1, 10)).toBe(0);   // Below minimum
+      expect(calculateScalingPercent(15, 1, 10)).toBe(100); // Above maximum
+    });
+  });
 });

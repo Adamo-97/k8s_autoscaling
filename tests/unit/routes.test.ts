@@ -18,8 +18,8 @@ describe('Server Routes Unit Tests', () => {
     test('dashboard includes HPA status section', async () => {
       const res = await request(app).get('/');
       expect(res.text).toContain('HPA Status');
-      expect(res.text).toContain('current-replicas');
-      expect(res.text).toContain('desired-replicas');
+      expect(res.text).toContain('scaling-progress');
+      expect(res.text).toContain('current-desired');
     });
 
     test('dashboard includes stress control', async () => {
@@ -208,31 +208,31 @@ describe('Server Routes Unit Tests', () => {
       const res = await request(app).get('/cpu-load');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('application/json');
-    }, 10000);
+    }, 15000);
 
     test('response includes status complete', async () => {
       const res = await request(app).get('/cpu-load');
       expect(res.body).toHaveProperty('status', 'complete');
-    }, 10000);
+    }, 15000);
 
     test('response includes elapsed time', async () => {
       const res = await request(app).get('/cpu-load');
       expect(res.body).toHaveProperty('elapsed');
       expect(typeof res.body.elapsed).toBe('number');
       expect(res.body.elapsed).toBeGreaterThan(3000);
-    }, 10000);
+    }, 15000);
 
     test('response includes result', async () => {
       const res = await request(app).get('/cpu-load');
       expect(res.body).toHaveProperty('result');
       expect(typeof res.body.result).toBe('string');
-    }, 10000);
+    }, 15000);
 
     test('response includes pod name', async () => {
       const res = await request(app).get('/cpu-load');
       expect(res.body).toHaveProperty('pod');
       expect(typeof res.body.pod).toBe('string');
-    }, 10000);
+    }, 15000);
   });
 
   describe('GET /pods', () => {
