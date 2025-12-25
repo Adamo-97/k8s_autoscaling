@@ -140,8 +140,11 @@ if [ -n "$INSTANCE_IDS" ]; then
             --query 'Reservations[*].Instances[*].State.Name' \
             --output text 2>/dev/null || echo "")
         
-        # Count terminated instances
-        TERMINATED=$(echo "$STATES" | tr '\t' '\n' | grep -c "terminated" || echo "0")
+        # Count terminated instances robustly (ensure numeric result)
+        TERMINATED=$(echo "$STATES" | tr '\t' '\n' | awk '/terminated/{c++} END{print (c+0)}')
+        if [ -z "$TERMINATED" ]; then
+            TERMINATED=0
+        fi
         
         if [ "$TERMINATED" -eq "$INSTANCE_COUNT" ]; then
             echo -e "${GREEN}[OK]${NC} All instances terminated"
