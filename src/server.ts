@@ -592,8 +592,12 @@ app.get('/pods', async (req: Request, res: Response) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
-  console.log(`[SERVER] Running on port ${PORT}`);
-  console.log(`[POD] Name: ${POD_NAME}`);
-  console.log(`[ENV] Environment: ${process.env.NODE_ENV || 'development'}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`[SERVER] Running on port ${PORT}`);
+    console.log(`[POD] Name: ${POD_NAME}`);
+    console.log(`[ENV] Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}
+
+export { app };

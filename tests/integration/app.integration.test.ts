@@ -24,7 +24,7 @@ function waitForHealth(url: string, timeout = 30000): Promise<void> {
 
 describe('Integration: server endpoints', () => {
   let proc: ChildProcess | null = null;
-  const PORT = process.env.PORT || '3000';
+  const PORT = '3002'; // Use different port
   const HEALTH_URL = `http://localhost:${PORT}/health`;
 
   beforeAll(async () => {

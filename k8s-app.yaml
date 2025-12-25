@@ -18,7 +18,7 @@ spec:
       serviceAccountName: dashboard-sa
       containers:
       - name: app
-        image: YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest
+        image: adamabd97/k8s-autoscaling-demo:latest
         ports:
         - containerPort: 3000
           name: http
