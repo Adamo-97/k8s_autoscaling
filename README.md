@@ -603,7 +603,7 @@ bash load-generator.sh $(minikube service k8s-autoscaling-service --url) 150 15
 
 ## 5. Prerequisites and Infrastructure Requirements
 
-### 4.1 Required Tools
+### 5.1 Required Tools
 
 The following software must be installed on the developer workstation prior to beginning implementation:
 
@@ -627,7 +627,7 @@ git --version
 node --version
 ```
 
-### 4.2 AWS Infrastructure Requirements
+### 5.2 AWS Infrastructure Requirements
 
 #### Critical Instance Type Requirement
 
