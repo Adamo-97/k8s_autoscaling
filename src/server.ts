@@ -179,9 +179,29 @@ app.get('/', (req: Request, res: Response) => {
           document.getElementById('start-stress').disabled = true;
           document.getElementById('stop-stress').disabled = false;
           document.getElementById('stress-status').textContent = 'Load started';
-          document.getElementById('stress-bar').style.width = '100%';
+          
+          // Animate progress bar over 30 seconds
+          let progress = 0;
+          const interval = setInterval(() => {
+            progress += 100 / 30; // Increment every second for 30 seconds
+            if (progress >= 100) {
+              progress = 100;
+              clearInterval(interval);
+              // Re-enable button after load completes
+              setTimeout(() => {
+                document.getElementById('start-stress').disabled = false;
+                document.getElementById('stop-stress').disabled = true;
+                document.getElementById('stress-status').textContent = 'Idle';
+                document.getElementById('stress-bar').style.width = '0%';
+                log('CPU stress completed');
+              }, 1000);
+            }
+            document.getElementById('stress-bar').style.width = progress + '%';
+          }, 1000);
         }).catch(() => {
           document.getElementById('stress-status').textContent = 'Error starting load';
+          document.getElementById('start-stress').disabled = false;
+          document.getElementById('stop-stress').disabled = true;
         });
     };
 
