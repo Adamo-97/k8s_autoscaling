@@ -246,8 +246,8 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
         const k8sApi = kc.makeApiClient(CoreV1Api);
         const hpaApi = kc.makeApiClient(AutoscalingV1Api);
 
-        // list pods in same namespace (default) and all namespaces if allowed
-        const podsResp = await k8sApi.listPodForAllNamespaces();
+        // list pods in same namespace (default) with app label only
+        const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
         const items = Array.isArray(podsResp.body.items) ? podsResp.body.items : [];
         status.pods = items.map((p: any) => ({
           name: p.metadata?.name || 'unknown',
@@ -266,9 +266,9 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
           })()
         }));
 
-        // list HPA (v1) - may not exist
+        // list HPA (v1) in default namespace
         try {
-          const hpaResp = await hpaApi.listHorizontalPodAutoscalerForAllNamespaces();
+          const hpaResp = await hpaApi.listNamespacedHorizontalPodAutoscaler('default');
           const hpaItems = Array.isArray(hpaResp.body.items) ? hpaResp.body.items : [];
           if (hpaItems.length > 0) {
             const h = hpaItems[0];
@@ -277,7 +277,7 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
               desired: h.status?.desiredReplicas || 0,
               min: h.spec?.minReplicas || 1,
               max: h.spec?.maxReplicas || 10,
-              cpu: ((h as any).status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization ? String((h as any).status?.currentMetrics?.find((m: any) => m.type === 'Resource' && m.resource?.name === 'cpu')?.resource?.current?.averageUtilization) + '%' : '—')
+              cpu: h.status?.currentCPUUtilizationPercentage ? String(h.status.currentCPUUtilizationPercentage) + '%' : '—'
             };
           }
         } catch (e) {
@@ -286,7 +286,7 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
       } catch (err) {
         // Fallback: try kubectl shell (useful for local dev when kubeconfig is present)
         try {
-          const { stdout: podOut } = await exec('kubectl get pods -o json --all-namespaces');
+          const { stdout: podOut } = await exec('kubectl get pods -l app=k8s-autoscaling -o json -n default');
           const podObj = JSON.parse(podOut || '{}');
           const items = Array.isArray(podObj.items) ? podObj.items : [];
           status.pods = items.map((p: any) => ({
