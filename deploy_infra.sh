@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# AWS INFRASTRUCTURE DEPLOYMENT SCRIPT (IMPROVED)
+# AWS INFRASTRUCTURE DEPLOYMENT SCRIPT FOR KUBERNETES CLUSTER
 # ==============================================================================
 # This script provisions 3 EC2 instances for a Kubernetes cluster.
 # It automatically configures Security Groups, Key Pairs, and User Data.
@@ -183,34 +183,80 @@ echo ""
 # --- Step 4: Launch Instances ---
 echo -e "${BLUE}[STEP 4]${NC} Launching EC2 instances..."
 if [ -f "aws/launch-instances.sh" ]; then
-    INSTANCE_IDS=$(bash aws/launch-instances.sh "$CLUSTER_NAME" "$REGION" "$INSTANCE_TYPE" "$INSTANCE_COUNT" "$AMI_ID" "$KEY_NAME" "$SG_ID")
-    if [ $? -ne 0 ] || [ -z "$INSTANCE_IDS" ]; then
-        echo -e "${RED}[ERROR]${NC} Instance launch failed"
-        exit 1
+    # Check for existing instances tagged with the cluster name and avoid creating duplicates
+    EXISTING_IDS=$(aws ec2 describe-instances \
+        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-node" "Name=instance-state-name,Values=running,pending,stopped,stopping" \
+        --region "$REGION" \
+        --query 'Reservations[*].Instances[*].InstanceId' --output text 2>/dev/null || echo "")
+
+    EXISTING_COUNT=0
+    if [ -n "$EXISTING_IDS" ]; then
+        EXISTING_COUNT=$(echo "$EXISTING_IDS" | wc -w)
+    fi
+
+    if [ "$EXISTING_COUNT" -ge "$INSTANCE_COUNT" ]; then
+        echo -e "${YELLOW}[SKIP]${NC} Found $EXISTING_COUNT existing instance(s) matching ${CLUSTER_NAME}-node. No new instances will be launched."
+        INSTANCE_IDS="$EXISTING_IDS"
+    else
+        TO_LAUNCH=$((INSTANCE_COUNT - EXISTING_COUNT))
+        echo -e "${BLUE}[INFO]${NC} Found $EXISTING_COUNT existing instance(s); launching $TO_LAUNCH more to reach $INSTANCE_COUNT total..."
+        NEW_IDS=$(bash aws/launch-instances.sh "$CLUSTER_NAME" "$REGION" "$INSTANCE_TYPE" "$TO_LAUNCH" "$AMI_ID" "$KEY_NAME" "$SG_ID")
+        if [ $? -ne 0 ] || [ -z "$NEW_IDS" ]; then
+            echo -e "${RED}[ERROR]${NC} Instance launch failed"
+            exit 1
+        fi
+        if [ -n "$EXISTING_IDS" ]; then
+            INSTANCE_IDS="$EXISTING_IDS $NEW_IDS"
+        else
+            INSTANCE_IDS="$NEW_IDS"
+        fi
     fi
 else
-    # Fallback to inline instance launch
-    INSTANCE_IDS=$(aws ec2 run-instances \
+    # Fallback inline: check for existing instances first to avoid duplicates
+    EXISTING_IDS=$(aws ec2 describe-instances \
+        --filters "Name=tag:Name,Values=${CLUSTER_NAME}-node" "Name=instance-state-name,Values=running,pending,stopped,stopping" \
         --region "$REGION" \
-        --image-id "$AMI_ID" \
-        --count "$INSTANCE_COUNT" \
-        --instance-type "$INSTANCE_TYPE" \
-        --key-name "$KEY_NAME" \
-        --security-group-ids "$SG_ID" \
-        --user-data file://setup_aws_node.sh \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${CLUSTER_NAME}-node}]" \
-        --query 'Instances[*].InstanceId' \
-        --output text)
-    
-    if [ -z "$INSTANCE_IDS" ]; then
-        echo -e "${RED}[ERROR]${NC} Failed to launch instances"
-        exit 1
+        --query 'Reservations[*].Instances[*].InstanceId' --output text 2>/dev/null || echo "")
+
+    EXISTING_COUNT=0
+    if [ -n "$EXISTING_IDS" ]; then
+        EXISTING_COUNT=$(echo "$EXISTING_IDS" | wc -w)
     fi
-    
-    echo -e "${GREEN}[OK]${NC} Launched instances: $INSTANCE_IDS"
-    echo "[INFO] Waiting for instances to reach 'running' state..."
-    aws ec2 wait instance-running --region "$REGION" --instance-ids $INSTANCE_IDS
-    echo -e "${GREEN}[OK]${NC} All instances are running"
+
+    if [ "$EXISTING_COUNT" -ge "$INSTANCE_COUNT" ]; then
+        echo -e "${YELLOW}[SKIP]${NC} Found $EXISTING_COUNT existing instance(s) matching ${CLUSTER_NAME}-node. No new instances will be launched."
+        INSTANCE_IDS="$EXISTING_IDS"
+    else
+        TO_LAUNCH=$((INSTANCE_COUNT - EXISTING_COUNT))
+        echo -e "${BLUE}[INFO]${NC} Found $EXISTING_COUNT existing instance(s); launching $TO_LAUNCH more to reach $INSTANCE_COUNT total..."
+        NEW_IDS=$(aws ec2 run-instances \
+            --region "$REGION" \
+            --image-id "$AMI_ID" \
+            --count "$TO_LAUNCH" \
+            --instance-type "$INSTANCE_TYPE" \
+            --key-name "$KEY_NAME" \
+            --security-group-ids "$SG_ID" \
+            --user-data file://setup_aws_node.sh \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${CLUSTER_NAME}-node}]" \
+            --query 'Instances[*].InstanceId' \
+            --output text)
+
+        if [ -z "$NEW_IDS" ]; then
+            echo -e "${RED}[ERROR]${NC} Failed to launch instances"
+            exit 1
+        fi
+
+        if [ -n "$EXISTING_IDS" ]; then
+            INSTANCE_IDS="$EXISTING_IDS $NEW_IDS"
+        else
+            INSTANCE_IDS="$NEW_IDS"
+        fi
+
+        echo -e "${GREEN}[OK]${NC} Launched instances: $NEW_IDS"
+        echo "[INFO] Waiting for instances to reach 'running' state..."
+        aws ec2 wait instance-running --region "$REGION" --instance-ids $NEW_IDS
+        echo -e "${GREEN}[OK]${NC} Launched instances are running"
+    fi
 fi
 echo ""
 
@@ -231,38 +277,38 @@ echo ""
 echo "==========================================="
 echo "   NEXT STEPS"
 echo "==========================================="
-echo ""
-echo "1. WAIT: User data script is running in background (3-5 minutes)"
-echo "   Installing: containerd, kubeadm, kubelet, kubectl"
-echo ""
-echo "2. VERIFY: SSH into first node to check installation status:"
+printf '%s\n' ""
+printf '%s\n' "1. WAIT: User data script is running in background (3-5 minutes)"
+printf '%s\n' "   Installing: containerd, kubeadm, kubelet, kubectl"
+printf '%s\n' ""
+printf '%s\n' "2. VERIFY: SSH into first node to check installation status:"
 FIRST_IP=$(aws ec2 describe-instances \
     --region "$REGION" \
     --instance-ids $INSTANCE_IDS \
     --query 'Reservations[0].Instances[0].PublicIpAddress' \
     --output text)
-echo "   ssh -i $KEY_FILE ubuntu@$FIRST_IP"
-echo "   sudo systemctl status kubelet  # Should be active"
-echo ""
-echo "3. INITIALIZE: On the first node (control plane):"
-echo "   sudo kubeadm init --pod-network-cidr=192.168.0.0/16"
-echo ""
-echo "4. CONFIGURE: After kubeadm init completes:"
-echo "   mkdir -p \$HOME/.kube"
-echo "   sudo cp -i /etc/kubernetes/admin.conf \$HOME/.kube/config"
-echo "   sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config"
-echo ""
-echo "5. INSTALL CNI: Install Calico network plugin:"
-echo "   kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml"
-echo ""
-echo "6. JOIN WORKERS: SSH into remaining nodes and run the 'kubeadm join' command"
-echo "   from the init output"
-echo ""
-echo "==========================================="
-echo ""
-echo "Cluster Name: $CLUSTER_NAME"
-echo "Key File:     $KEY_FILE"
-echo "Region:       $REGION"
-echo ""
-echo "To destroy infrastructure: bash teardown_infra.sh"
-echo "==========================================="
+printf '%s\n' "   ssh -i $KEY_FILE ubuntu@$FIRST_IP"
+printf '%s\n' "   sudo systemctl status kubelet  # Should be active"
+printf '%s\n' ""
+printf '%s\n' "3. INITIALIZE: On the first node (control plane):"
+printf '%s\n' "   sudo kubeadm init --pod-network-cidr=192.168.0.0/16"
+printf '%s\n' ""
+printf '%s\n' "4. CONFIGURE: After kubeadm init completes:"
+printf '%s\n' "   mkdir -p \$HOME/.kube"
+printf '%s\n' "   sudo cp -i /etc/kubernetes/admin.conf \$HOME/.kube/config"
+printf '%s\n' "   sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config"
+printf '%s\n' ""
+printf '%s\n' "5. INSTALL CNI: Install Calico network plugin:"
+printf '%s\n' "   kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml"
+printf '%s\n' ""
+printf '%s\n' "6. JOIN WORKERS: SSH into remaining nodes and run the 'kubeadm join' command"
+printf '%s\n' "   from the init output"
+printf '%s\n' ""
+printf '%s\n' "==========================================="
+printf '%s\n' ""
+printf '%s\n' "Cluster Name: $CLUSTER_NAME"
+printf '%s\n' "Key File:     $KEY_FILE"
+printf '%s\n' "Region:       $REGION"
+printf '%s\n' ""
+printf '%s\n' "To destroy infrastructure: bash teardown_infra.sh"
+printf '%s\n' "==========================================="
