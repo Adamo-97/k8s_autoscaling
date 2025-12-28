@@ -273,6 +273,60 @@ No manual docker pull needed on worker nodes - Kubernetes handles it.
 3. Watch HPA scale pods from 1 → 10 replicas
 4. Observe real-time pod creation in dashboard
 
+### Managing Kubernetes Resources
+
+**Delete stuck or problematic pods:**
+
+```bash
+# SSH to control plane node
+ssh -i k8s-autoscaling-demo-key.pem ubuntu@<CONTROL_PLANE_IP>
+
+# List all app pods
+kubectl get pods -l app=k8s-autoscaling
+
+# Delete a specific stuck pod (it will be recreated automatically by the Deployment)
+kubectl delete pod <POD_NAME>
+
+# Example:
+kubectl delete pod k8s-autoscaling-app-5d54b8bbf6-k2jjz
+```
+
+**Redeploy application with updated code/image:**
+
+```bash
+# 1. Build and push new image (run locally)
+docker build -t YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest .
+docker push YOUR_DOCKERHUB_USERNAME/k8s-autoscaling-demo:latest
+
+# 2. Restart deployment (on control plane)
+kubectl rollout restart deployment/k8s-autoscaling-app
+kubectl rollout status deployment/k8s-autoscaling-app
+
+# Verify new pods are running
+kubectl get pods -l app=k8s-autoscaling
+```
+
+**Remove application deployment completely:**
+
+```bash
+# SSH to control plane node
+ssh -i k8s-autoscaling-demo-key.pem ubuntu@<CONTROL_PLANE_IP>
+
+# Delete all application resources
+kubectl delete -f k8s-app.yaml
+kubectl delete -f k8s-hpa.yaml
+
+# Optional: Remove metrics-server
+kubectl delete -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.0/components.yaml
+
+# Verify removal
+kubectl get deployments
+kubectl get hpa
+kubectl get pods -l app=k8s-autoscaling
+```
+
+**Note:** Use the commands above for iterative development. Use `teardown_infra.sh` only when you're completely done and want to destroy all AWS infrastructure.
+
 ### Cleanup After Testing
 
 ```bash
