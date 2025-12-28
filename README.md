@@ -172,7 +172,7 @@ kubectl get hpa
 
 # Get the NodePort (should be 30080)
 kubectl get svc k8s-autoscaling-demo-service
-
+```
 #### Step 5a: (If HPA shows <unknown>/50% or `kubectl top` fails) Fix Metrics Server TLS and verify metrics
 
 Sometimes the Metrics Server cannot scrape kubelets due to kubelet serving certificates lacking IP SANs. If you see `<unknown>/50%` for the HPA or `error: Metrics API not available` from `kubectl top`, run the patch below on the control plane to allow the metrics-server to talk to kubelets in non-production/lab environments.
@@ -185,7 +185,6 @@ kubectl -n kube-system patch deployment metrics-server --patch '{"spec":{"templa
 kubectl -n kube-system rollout restart deployment/metrics-server
 kubectl -n kube-system rollout status deployment/metrics-server
 ```
-
 After the rollout completes, verify metrics are available and the HPA reports real CPU utilization:
 
 ```bash
