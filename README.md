@@ -172,6 +172,45 @@ kubectl get hpa
 
 # Get the NodePort (should be 30080)
 kubectl get svc k8s-autoscaling-demo-service
+
+#### Step 5a: (If HPA shows <unknown>/50% or `kubectl top` fails) Fix Metrics Server TLS and verify metrics
+
+Sometimes the Metrics Server cannot scrape kubelets due to kubelet serving certificates lacking IP SANs. If you see `<unknown>/50%` for the HPA or `error: Metrics API not available` from `kubectl top`, run the patch below on the control plane to allow the metrics-server to talk to kubelets in non-production/lab environments.
+
+```bash
+# Patch metrics-server to skip kubelet cert verification and prefer InternalIP
+kubectl -n kube-system patch deployment metrics-server --patch '{"spec":{"template":{"spec":{"containers":[{"name":"metrics-server","args":["--kubelet-insecure-tls","--kubelet-preferred-address-types=InternalIP,Hostname,InternalDNS"]}]}}}}'
+
+# Restart and wait for rollout
+kubectl -n kube-system rollout restart deployment/metrics-server
+kubectl -n kube-system rollout status deployment/metrics-server
+```
+
+After the rollout completes, verify metrics are available and the HPA reports real CPU utilization:
+
+```bash
+# Check metrics-server pod is Running/1
+kubectl get pods -n kube-system | grep metrics-server
+
+# Example expected output (pod becomes Ready/1):
+# metrics-server-<id>   1/1     Running   0          30s
+
+# View node metrics
+kubectl top nodes
+
+# Example expected output:
+# NAME              CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+# ip-172-31-7-48    250m         6%     512Mi           12%
+
+# View HPA metrics (should show a numeric % instead of <unknown>)
+kubectl get hpa
+
+# Example expected output:
+# NAME                  REFERENCE                        TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
+# k8s-autoscaling-hpa   Deployment/k8s-autoscaling-app   3%/50%          1         10        1          5m
+```
+
+If `kubectl top` still reports `Metrics API not available` or the metrics-server pod logs show TLS x509 errors, paste the `kubectl logs -n kube-system <metrics-server-pod>` output here. The `--kubelet-insecure-tls` flag is intended for development and lab clusters only; for production you should fix the kubelet serving certs to include node IPs (SANs) or provide a proper CA.
 ```
 
 **Access the dashboard:**
