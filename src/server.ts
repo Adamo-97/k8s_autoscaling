@@ -18,6 +18,7 @@ const POD_NAME = process.env.HOSTNAME || os.hostname();
 // Global flag to stop stress tests
 let stopStress = false;
 let stressStartTime = 0;
+let activeStressTest = false; // Track if a stress test is currently running
 
 // Middleware
 app.use(express.json());
@@ -488,8 +489,52 @@ app.get('/stress', (req: Request, res: Response) => {
   res.send(html);
 });
 
+// Endpoint to stop all CPU stress tests
+app.post('/stop-load', async (req: Request, res: Response) => {
+  stopStress = true;
+  activeStressTest = false;
+  
+  // Also propagate stop to all other pods
+  try {
+    const kc = new KubeConfig();
+    try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
+    const k8sApi = kc.makeApiClient(CoreV1Api);
+    const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
+    const podIps: string[] = (podsResp.body.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+    
+    // Send stop signal to all pods
+    const stopPromises = podIps.map(ip => 
+      (fetch as any)(`http://${ip}:3000/internal-stop`, { method: 'POST' }).catch(() => null)
+    );
+    await Promise.allSettled(stopPromises);
+  } catch (err) {
+    // Fallback: stop locally only
+  }
+  
+  res.json({ status: 'stopped', timestamp: new Date().toISOString() });
+});
+
+// Internal endpoint for pods to receive stop signals from other pods
+app.post('/internal-stop', (req: Request, res: Response) => {
+  stopStress = true;
+  activeStressTest = false;
+  res.json({ status: 'stopped' });
+});
+
 // Endpoint to trigger distributed load across pods
 app.post('/generate-load', async (req: Request, res: Response) => {
+  // Prevent multiple concurrent stress tests
+  if (activeStressTest) {
+    return res.status(409).json({ 
+      status: 'error', 
+      message: 'A stress test is already running. Stop it first before starting a new one.' 
+    });
+  }
+  
+  activeStressTest = true;
+  stopStress = false; // Reset stop flag
+  stressStartTime = Date.now();
+  
   const concurrency = 50; // Increased from 20 for more load
   const rounds = 6; // Run 6 rounds of 10 seconds each = 60 seconds total
 
@@ -527,6 +572,11 @@ app.post('/generate-load', async (req: Request, res: Response) => {
   (async () => {
     const targets = podIps.length ? podIps : ['127.0.0.1'];
     for (let round = 0; round < rounds; round++) {
+      // Check if stop was requested
+      if (stopStress) {
+        break;
+      }
+      
       const tasks: Promise<any>[] = [];
       for (let i = 0; i < concurrency; i++) {
         const target = targets[i % targets.length];
@@ -536,6 +586,10 @@ app.post('/generate-load', async (req: Request, res: Response) => {
       }
       try { await Promise.all(tasks); } catch {}
     }
+    
+    // Auto-cleanup after stress test completes
+    activeStressTest = false;
+    stopStress = false;
   })();
 
   res.status(202).json({ status: 'started', targets: podIps.length || ['service'], concurrency, rounds });
