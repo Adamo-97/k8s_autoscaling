@@ -173,43 +173,78 @@ kubectl get hpa
 # Get the NodePort (should be 30080)
 kubectl get svc k8s-autoscaling-demo-service
 ```
-#### Step 5a: (If HPA shows <unknown>/50% or `kubectl top` fails) Fix Metrics Server TLS and verify metrics
+#### Step 5a: Install and Configure Metrics Server (Required for HPA)
 
-Sometimes the Metrics Server cannot scrape kubelets due to kubelet serving certificates lacking IP SANs. If you see `<unknown>/50%` for the HPA or `error: Metrics API not available` from `kubectl top`, run the patch below on the control plane to allow the metrics-server to talk to kubelets in non-production/lab environments.
+The Horizontal Pod Autoscaler requires metrics-server to collect CPU/memory metrics. Self-managed clusters need additional configuration due to self-signed kubelet certificates.
+
+**Install metrics-server:**
 
 ```bash
-# Patch metrics-server to skip kubelet cert verification and prefer InternalIP
-kubectl -n kube-system patch deployment metrics-server --patch '{"spec":{"template":{"spec":{"containers":[{"name":"metrics-server","args":["--kubelet-insecure-tls","--kubelet-preferred-address-types=InternalIP,Hostname,InternalDNS"]}]}}}}'
-
-# Restart and wait for rollout
-kubectl -n kube-system rollout restart deployment/metrics-server
-kubectl -n kube-system rollout status deployment/metrics-server
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
-After the rollout completes, verify metrics are available and the HPA reports real CPU utilization:
+
+**Configure for self-managed clusters (fix kubelet TLS and cert-dir issues):**
 
 ```bash
-# Check metrics-server pod is Running/1
-kubectl get pods -n kube-system | grep metrics-server
+# Clean any failed pods and prepare for patch
+kubectl -n kube-system scale deployment metrics-server --replicas=0
+kubectl -n kube-system delete rs -l k8s-app=metrics-server --ignore-not-found
+kubectl -n kube-system delete pod -l k8s-app=metrics-server --ignore-not-found
 
-# Example expected output (pod becomes Ready/1):
-# metrics-server-<id>   1/1     Running   0          30s
+# Wait for cleanup
+sleep 3
+
+# Patch with lab-compatible configuration (atomic replace to avoid duplicate ports)
+kubectl -n kube-system patch deployment metrics-server --type='json' -p='[
+  {"op":"replace","path":"/spec/template/spec/containers/0/ports","value":[{"containerPort":443,"name":"https","protocol":"TCP"}]},
+  {"op":"replace","path":"/spec/template/spec/containers/0/args","value":["--cert-dir=/tmp","--secure-port=443","--kubelet-insecure-tls","--kubelet-preferred-address-types=InternalIP"]}
+]'
+
+# Scale back up and wait for rollout
+kubectl -n kube-system scale deployment metrics-server --replicas=1
+kubectl -n kube-system rollout status deployment/metrics-server --timeout=3m
+```
+
+**Verify metrics are working:**
+
+```bash
+# Check metrics-server pod is Running/Ready
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+
+# Expected output:
+# NAME                              READY   STATUS    RESTARTS   AGE
+# metrics-server-77f555d89b-xxxxx   1/1     Running   0          60s
 
 # View node metrics
 kubectl top nodes
 
-# Example expected output:
+# Expected output:
 # NAME              CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
-# ip-172-31-7-48    250m         6%     512Mi           12%
+# ip-172-31-7-48    250m         12%    512Mi           25%
 
-# View HPA metrics (should show a numeric % instead of <unknown>)
+# View HPA metrics (should show numeric % instead of <unknown>)
 kubectl get hpa
 
-# Example expected output:
-# NAME                  REFERENCE                        TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
-# k8s-autoscaling-hpa   Deployment/k8s-autoscaling-app   3%/50%          1         10        1          5m
+# Expected output:
+# NAME                  REFERENCE                        TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+# k8s-autoscaling-hpa   Deployment/k8s-autoscaling-app   1%/50%    1         10        1          5m
 ```
 
-If `kubectl top` still reports `Metrics API not available` or the metrics-server pod logs show TLS x509 errors, paste the `kubectl logs -n kube-system <metrics-server-pod>` output here. The `--kubelet-insecure-tls` flag is intended for development and lab clusters only; for production you should fix the kubelet serving certs to include node IPs (SANs) or provide a proper CA.
+**Troubleshooting:**
+
+If HPA still shows `<unknown>/50%` or `kubectl top` returns `Metrics API not available`:
+
+```bash
+# Check metrics-server logs for errors
+kubectl -n kube-system logs -l k8s-app=metrics-server --tail=100
+
+# Check APIService registration
+kubectl get apiservice v1beta1.metrics.k8s.io
+
+# If APIService shows "False" status, wait 30s and retry kubectl top commands
+```
+
+**Note:** The `--kubelet-insecure-tls` flag is for development/lab clusters only. For production, configure kubelet serving certificates with proper IP SANs or use a valid CA.
 ```
 
 **Access the dashboard:**
