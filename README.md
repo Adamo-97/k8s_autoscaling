@@ -245,7 +245,6 @@ kubectl get apiservice v1beta1.metrics.k8s.io
 ```
 
 **Note:** The `--kubelet-insecure-tls` flag is for development/lab clusters only. For production, configure kubelet serving certificates with proper IP SANs or use a valid CA.
-```
 
 **Access the dashboard:**
 
