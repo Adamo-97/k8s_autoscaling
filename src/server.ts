@@ -30,7 +30,7 @@ app.get('/', (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Team 22 - K8s Autoscaling Dashboard</title>
+  <title>K8s Autoscaling Dashboard</title>
   <style>
     :root{--bg:#0a0e14;--card:#14181c;--muted:#9aa6b2;--accent:#6ee7b7;--warn:#f59e0b;--danger:#ef4444}
     *{box-sizing:border-box;margin:0;padding:0}
