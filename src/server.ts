@@ -15,6 +15,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const POD_NAME = process.env.HOSTNAME || os.hostname();
 
+// Global flag to stop stress tests
+let stopStress = false;
+let stressStartTime = 0;
+
 // Middleware
 app.use(express.json());
 
@@ -255,12 +259,16 @@ app.get('/', (req: Request, res: Response) => {
     };
 
     document.getElementById('stop-stress').onclick = () => {
-      // We cannot stop remote /cpu-load once started; just update UI
-      document.getElementById('start-stress').disabled = false;
-      document.getElementById('stop-stress').disabled = true;
-      document.getElementById('stress-status').textContent = 'Stopped';
-      document.getElementById('stress-bar').style.width = '0%';
-      log('CPU stress stop requested (best-effort)');
+      // Call server to stop the stress test
+      fetch('/stop-load', { method: 'POST' }).then(() => {
+        document.getElementById('start-stress').disabled = false;
+        document.getElementById('stop-stress').disabled = true;
+        document.getElementById('stress-status').textContent = 'Stopped';
+        document.getElementById('stress-bar').style.width = '0%';
+        log('CPU stress stopped');
+      }).catch((e) => {
+        log('Stop request failed: ' + e.message);
+      });
     };
 
     log('Dashboard initialized');
@@ -540,16 +548,18 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   let result = 0;
   
   // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
+  // BUT check stop flag and abort early if needed
   const duration = 10000;
-  while (Date.now() - start < duration) {
+  while (Date.now() - start < duration && !stopStress) {
     for (let i = 0; i < 1000000; i++) {  // Increased iterations for more CPU usage
       result += Math.sqrt(i) * Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
     }
   }
   
   const elapsed = Date.now() - start;
+  const stopped = stopStress;
   res.json({ 
-    status: 'complete', 
+    status: stopped ? 'stopped' : 'complete', 
     elapsed, 
     result: result.toFixed(2),
     pod: POD_NAME 
