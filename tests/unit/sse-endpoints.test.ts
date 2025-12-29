@@ -156,7 +156,7 @@ describe('SSE Endpoints and Real-time Monitoring', () => {
 
     test('dashboard includes event log', async () => {
       const res = await request(app).get('/');
-      expect(res.text).toContain('log(');
+      expect(res.text).toContain('logEvent(');
       expect(res.text).toContain('logs');  // actual ID used in server
     });
 

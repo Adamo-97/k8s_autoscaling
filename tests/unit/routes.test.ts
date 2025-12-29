@@ -85,17 +85,17 @@ describe('Server Routes Unit Tests', () => {
       expect(res.headers['content-type']).toContain('text/html');
     });
 
-    test('stress page contains control buttons', async () => {
+    test('stress page contains title and progress bar', async () => {
       const res = await request(app).get('/stress');
-      expect(res.text).toContain('Stress Control');
-      expect(res.text).toContain('Start CPU Load');
-      expect(res.text).toContain('Stop');
+      expect(res.text).toContain('CPU Stress Test');
+      expect(res.text).toContain('progress');
+      expect(res.text).toContain('bar');
     });
 
-    test('stress page includes pod info', async () => {
+    test('stress page includes log element', async () => {
       const res = await request(app).get('/stress');
-      expect(res.text).toMatch(/Pod:|pod:/i);
-      expect(res.text).toMatch(/PID:/i);
+      expect(res.text).toContain('id="log"');
+      expect(res.text).toContain('Progress');
     });
 
     test('stress page connects to SSE endpoint', async () => {

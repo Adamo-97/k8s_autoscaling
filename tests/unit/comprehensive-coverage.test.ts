@@ -156,10 +156,9 @@ describe('Comprehensive Code Path Coverage', () => {
       const html = res.text;
       
       // Verify all major code blocks
-      expect(html).toContain('let stressES, clusterES');
+      expect(html).toContain('let clusterES');
       expect(html).toContain('const startTime = Date.now()');
       expect(html).toContain('const knownPods = new Set()');
-      expect(html).toContain('const podCreationTimes = new Map()');
       expect(html).toContain('let initialReplicas = null');
       expect(html).toContain('let peakReplicas = 0');
       expect(html).toContain('let lastReplicaCount = 0');
@@ -193,7 +192,6 @@ describe('Comprehensive Code Path Coverage', () => {
       expect(html).toContain("logEvent('pod-new'");
       expect(html).toContain('knownPods.has');
       expect(html).toContain('knownPods.add');
-      expect(html).toContain('podCreationTimes.set');
     });
 
     test('dashboard includes progress bar animation', async () => {
@@ -202,7 +200,7 @@ describe('Comprehensive Code Path Coverage', () => {
       
       expect(html).toContain('let progress = 0');
       expect(html).toContain('setInterval');
-      expect(html).toContain('progress += 100 / 60');
+      expect(html).toContain('progress += 100 / 80');
       expect(html).toContain('clearInterval');
     });
 

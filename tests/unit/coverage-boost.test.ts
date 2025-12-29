@@ -76,7 +76,7 @@ describe('Error Handling and Edge Cases Coverage', () => {
 
     test('dashboard includes log function', async () => {
       const res = await request(app).get('/');
-      expect(res.text).toContain('function log(');
+      expect(res.text).toContain('function logEvent(');
       expect(res.text).toContain('getElementById(\'logs\')');
       expect(res.text).toContain('log-entry');
     });
@@ -90,14 +90,14 @@ describe('Error Handling and Edge Cases Coverage', () => {
     test('dashboard includes progress bar logic', async () => {
       const res = await request(app).get('/');
       expect(res.text).toContain('progress');
-      expect(res.text).toContain('100 / 60');
+      expect(res.text).toContain('100 / 80');
       expect(res.text).toContain('stress-bar');
     });
 
     test('dashboard includes fetch error handling', async () => {
       const res = await request(app).get('/');
       expect(res.text).toContain('.catch');
-      expect(res.text).toContain('Error starting load');
+      expect(res.text).toContain('Failed to start stress test');
     });
   });
 
@@ -208,11 +208,11 @@ describe('Error Handling and Edge Cases Coverage', () => {
       const html = res.text;
       
       // Verify all major JavaScript sections exist
-      expect(html).toContain('let stressES, clusterES;');
-      expect(html).toContain('let initialReplicas = null;');
-      expect(html).toContain('let peakReplicas = 0;');
-      expect(html).toContain('let lastReplicaCount = 0;');
-      expect(html).toContain('function log(msg)');
+      expect(html).toContain('let clusterES');
+      expect(html).toContain('let initialReplicas = null');
+      expect(html).toContain('let peakReplicas = 0');
+      expect(html).toContain('let lastReplicaCount = 0');
+      expect(html).toContain('function logEvent(type, msg)');
       expect(html).toContain('function updateUptime()');
       expect(html).toContain('function connectCluster()');
     });

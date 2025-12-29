@@ -1,26 +1,14 @@
 /**
  * K8s Autoscaling Demo Server - Entry Point
  * 
- * This is the main entry point. All logic is in files:
- * - config/index.ts - Configuration and logging
- * - services/stress.service.ts - CPU stress test logic
- * - services/kubernetes.service.ts - K8s API interactions
- * - templates/dashboard.ts - HTML templates
- * - app.ts - Express app setup and routes
+ * This file is the main entry point for the server.
+ * All application logic is in app.ts and the services.
  */
-
-export { app } from './app';
-export { CONFIG, COLORS, log } from './config';
-export * from './services/stress.service';
-export * from './services/kubernetes.service';
-
-// Re-export utils for backward compatibility
-export * from './utils/kubernetes';
 
 import { app } from './app';
 import { CONFIG, COLORS, log } from './config';
 
-// Start the server when run directly
+// Start the server
 if (require.main === module) {
   app.listen(CONFIG.PORT, () => {
     console.log(`${COLORS.bright}${COLORS.cyan}╔════════════════════════════════════════════════════════════╗${COLORS.reset}`);
@@ -33,6 +21,9 @@ if (require.main === module) {
     console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}Node:${COLORS.reset}        ${process.version}`);
     console.log(`${COLORS.bright}${COLORS.cyan}╚════════════════════════════════════════════════════════════╝${COLORS.reset}`);
     log.info('Server started successfully');
-    log.info(`HPA Target CPU: ${CONFIG.HPA_TARGET_CPU}%`);
+    log.info(`HPA Target CPU: ${CONFIG.HPA_TARGET_CPU}% (scale up above, scale down below)`);
   });
 }
+
+// Export for backward compatibility
+export { app };
