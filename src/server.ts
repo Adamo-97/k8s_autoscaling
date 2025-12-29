@@ -687,8 +687,8 @@ app.post('/generate-load', async (req: Request, res: Response) => {
   stressStartTime = Date.now();
   log.stress('STARTED', `Time: ${new Date().toISOString()}`);
   
-  const concurrency = 50; // Increased from 20 for more load
-  const rounds = 6; // Run 6 rounds of 10 seconds each = 60 seconds total
+  const concurrency = 100; // Increased from 50 for more intense load
+  const rounds = 8; // Run 8 rounds of 10 seconds each = 80 seconds total (more time to scale)
 
   // Get pod IPs for app label
   let podIps: string[] = [];
@@ -795,7 +795,7 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   // Perform CPU work in chunks, yielding to event loop between chunks
   // This allows stop signals to be processed and prevents blocking
   const duration = 10000; // 10 seconds total
-  const chunkDuration = 100; // 100ms of work per chunk
+  const chunkDuration = 500; // 500ms of intense work per chunk (was 100ms - too light)
   
   while (Date.now() - start < duration) {
     // Check stop flag at the start of each chunk
@@ -804,10 +804,11 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
       break;
     }
     
-    // Do CPU-intensive work for ~100ms
+    // Do CPU-intensive work for ~500ms
+    // Increased iteration count for higher CPU utilization
     const chunkStart = Date.now();
     while (Date.now() - chunkStart < chunkDuration) {
-      for (let i = 0; i < 50000; i++) {
+      for (let i = 0; i < 200000; i++) {
         result += Math.sqrt(i) * Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
       }
     }
