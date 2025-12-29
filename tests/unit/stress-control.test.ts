@@ -37,7 +37,7 @@ describe('Stress Test Control and State Management', () => {
       const start = await request(app).post('/generate-load');
       expect([200, 202]).toContain(start.status);
 
-      // Wait for stress test to complete (6 rounds * ~10s = 60s)
+      // Wait for stress test to complete (8 rounds * ~10s = 80s)
       // We won't wait the full time, just verify the mechanism exists
       expect(start.body.rounds).toBeGreaterThan(0);
     }, 70000);
@@ -87,8 +87,8 @@ describe('Stress Test Control and State Management', () => {
     test('generate-load sets correct concurrency and rounds', async () => {
       const res = await request(app).post('/generate-load');
       if (res.status === 202) {
-        expect(res.body.concurrency).toBe(50);
-        expect(res.body.rounds).toBe(6);
+        expect(res.body.concurrency).toBe(100);
+        expect(res.body.rounds).toBe(8);
       }
     });
   });

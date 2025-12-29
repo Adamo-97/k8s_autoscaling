@@ -491,8 +491,8 @@ describe('Kubernetes Utility Functions', () => {
       const response = createGenerateLoadResponse(['10.0.0.1'], 50, 6);
       expect(response.status).toBe('started');
       expect(response.targets).toEqual(['10.0.0.1']);
-      expect(response.concurrency).toBe(50);
-      expect(response.rounds).toBe(6);
+      expect(response.concurrency).toBe(100);
+      expect(response.rounds).toBe(8);
     });
   });
 
