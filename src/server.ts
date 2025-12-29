@@ -88,7 +88,7 @@ app.get('/', (req: Request, res: Response) => {
 </head>
 <body>
   <div class="container">
-    <h1>Team 22 - Kubernetes Autoscaling Dashboard</h1>
+    <h1>Kubernetes Autoscaling Dashboard</h1>
     <p style="color:var(--muted);margin-bottom:20px">Live monitoring · Served by pod: <strong style="color:var(--accent)">${POD_NAME}</strong></p>
 
     <div class="grid">
@@ -392,7 +392,7 @@ app.get('/stress', (req: Request, res: Response) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Team 22 - Stress Control</title>
+  <title>Stress Control</title>
   <style>
     :root{--bg:#0b0f14;--card:rgba(20,24,28,0.9);--muted:#9aa6b2;--accent:#6ee7b7;--warn:#f59e0b}
     body{margin:0;background:var(--bg);color:#e6eef3;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh}
