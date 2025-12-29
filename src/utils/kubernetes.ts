@@ -148,10 +148,31 @@ export function parseKubectlPods(stdout: string): any[] {
 }
 
 /**
- * Extract pod IPs from pod list
+ * Check if a pod is ready (Running + all containers ready)
+ */
+export function isPodReady(pod: any): boolean {
+  // Must be Running phase
+  if (pod?.status?.phase !== 'Running') {
+    return false;
+  }
+  
+  // Must not be marked for deletion
+  if (pod?.metadata?.deletionTimestamp) {
+    return false;
+  }
+  
+  // Check Ready condition
+  const conditions = pod?.status?.conditions || [];
+  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
+  return readyCondition?.status === 'True';
+}
+
+/**
+ * Extract pod IPs from pod list - only returns IPs of Running+Ready pods
  */
 export function extractPodIPs(pods: any[]): string[] {
   return pods
+    .filter(isPodReady)
     .map((p: any) => p?.status?.podIP)
     .filter(Boolean) as string[];
 }

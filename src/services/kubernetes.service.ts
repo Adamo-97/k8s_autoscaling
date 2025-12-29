@@ -45,6 +45,7 @@ export function createKubeConfig(): KubeConfig {
 
 /**
  * Get pod IPs for the autoscaling app
+ * Only returns IPs of pods that are Running + Ready (not terminating)
  * 
  * @returns Array of pod IP addresses
  */
@@ -60,13 +61,18 @@ export async function getPodIPs(): Promise<string[]> {
       undefined, 
       'app=k8s-autoscaling'
     );
-    return extractPodIPs(podsResp.body.items || []);
+    const allPods = podsResp.body.items || [];
+    const readyIPs = extractPodIPs(allPods);
+    log.debug(`getPodIPs: ${allPods.length} total pods, ${readyIPs.length} ready: [${readyIPs.join(', ')}]`);
+    return readyIPs;
   } catch (err) {
     log.debug(`K8s API failed, trying kubectl: ${err}`);
     try {
       const { stdout } = await exec("kubectl get pods -l app=k8s-autoscaling -o json -n default");
       const items = parseKubectlPods(stdout);
-      return extractPodIPs(items);
+      const readyIPs = extractPodIPs(items);
+      log.debug(`getPodIPs (kubectl): ${items.length} total pods, ${readyIPs.length} ready`);
+      return readyIPs;
     } catch (e) {
       log.debug(`kubectl also failed: ${e}`);
       return [];
