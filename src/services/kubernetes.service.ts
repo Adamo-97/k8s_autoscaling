@@ -5,6 +5,7 @@ import { CONFIG, log } from '../config';
 import { 
   parsePodInfo, 
   parseHPAStatus, 
+  parseHPAStatusV2,
   parseKubectlPods, 
   extractPodIPs 
 } from '../utils/kubernetes';
@@ -120,12 +121,15 @@ export async function fetchClusterStatus(): Promise<{
         'k8s-autoscaling-hpa',
         'default'
       );
-      status.hpa = parseHPAStatus(hpaResp.body);
+      // Use V2 parser for proper metrics extraction
+      status.hpa = parseHPAStatusV2(hpaResp.body);
+      log.debug(`HPA fetched: CPU=${status.hpa.cpu}, current=${status.hpa.current}, desired=${status.hpa.desired}`);
       
       // Log scaling events
       logScalingEvents(status.hpa);
-    } catch (hpaErr) {
-      log.debug(`HPA fetch failed: ${hpaErr}`);
+    } catch (hpaErr: any) {
+      log.error(`HPA fetch failed: ${hpaErr?.message || hpaErr}`);
+      status.hpa = { current: 0, desired: 0, min: 1, max: 10, cpu: '—', error: true };
     }
   } catch (err) {
     // Fallback to kubectl

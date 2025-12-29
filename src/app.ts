@@ -114,6 +114,8 @@ async function runDistributedLoadTest(
   concurrency: number, 
   rounds: number
 ): Promise<void> {
+  log.stress('Distributed load starting', `${rounds} rounds x ${concurrency} concurrent requests`);
+  
   try {
     for (let round = 0; round < rounds; round++) {
       if (stressService.getStopStress()) {
@@ -121,7 +123,7 @@ async function runDistributedLoadTest(
         break;
       }
       
-      log.debug(`Round ${round + 1}/${rounds} starting`);
+      log.info(`Round ${round + 1}/${rounds} - sending ${concurrency} requests to ${targets.length} targets`);
       
       // Create concurrent requests
       const tasks: Promise<any>[] = [];
@@ -131,17 +133,24 @@ async function runDistributedLoadTest(
         const p = (fetch as any)(url, {
           method: 'GET',
           signal: AbortSignal.timeout(CONFIG.TIMEOUTS.FETCH_MS)
-        }).catch(() => null);
+        }).catch((e: any) => {
+          log.debug(`Request to ${target} failed: ${e?.message || e}`);
+          return null;
+        });
         tasks.push(p);
       }
       
-      await Promise.all(tasks);
+      const results = await Promise.all(tasks);
+      const successCount = results.filter(r => r !== null).length;
+      log.debug(`Round ${round + 1} complete: ${successCount}/${concurrency} succeeded`);
+      
       await new Promise(resolve => setImmediate(resolve));
     }
   } catch (err) {
     log.error(`Load test failed: ${err}`);
   } finally {
     stressService.endStressTest();
+    log.stress('Distributed load complete');
   }
 }
 
@@ -151,16 +160,21 @@ async function runDistributedLoadTest(
 async function cpuLoadHandler(req: Request, res: Response): Promise<void> {
   // Early exit if stopped
   if (stressService.getStopStress()) {
+    log.debug('CPU load request - stopped flag is set, returning early');
     res.json(createStressResult(0, 0, true, CONFIG.POD_NAME));
     return;
   }
   
   // If no active test, reset stop flag (direct call)
   if (!stressService.getActiveStressTest()) {
+    log.debug('CPU load request - no active test, resetting stop flag');
     stressService.setStopStress(false);
   }
   
+  log.debug(`CPU load starting on ${CONFIG.POD_NAME}`);
   const result = await stressService.executeCpuWork();
+  log.debug(`CPU load complete: ${result.elapsed}ms, stopped=${result.wasStopped}`);
+  
   res.json(createStressResult(result.elapsed, result.result, result.wasStopped, CONFIG.POD_NAME));
 }
 

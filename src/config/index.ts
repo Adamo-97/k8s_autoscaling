@@ -3,7 +3,7 @@ export const CONFIG = {
   PORT: parseInt(process.env.PORT || '3000', 10),
   POD_NAME: process.env.HOSTNAME || require('os').hostname(),
   NODE_ENV: process.env.NODE_ENV || 'development',
-  DEBUG: !!process.env.DEBUG,
+  DEBUG: process.env.DEBUG !== 'false', // Default to true for diagnostics
   
   // HPA settings - must match k8s-hpa.yaml
   HPA_TARGET_CPU: 50,
