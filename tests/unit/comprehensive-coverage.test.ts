@@ -21,8 +21,8 @@ describe('Comprehensive Code Path Coverage', () => {
       if (res.status === 202) {
         expect(res.body.status).toBe('started');
         expect(res.body.targets).toBeDefined();
-        expect(res.body.concurrency).toBe(100);
-        expect(res.body.rounds).toBe(8);
+        expect(res.body.concurrency).toBe(20);
+        expect(res.body.rounds).toBe(12);
         
         // Wait for some rounds to execute
         await new Promise(resolve => setTimeout(resolve, 1000));

@@ -87,8 +87,8 @@ describe('Stress Test Control and State Management', () => {
     test('generate-load sets correct concurrency and rounds', async () => {
       const res = await request(app).post('/generate-load');
       if (res.status === 202) {
-        expect(res.body.concurrency).toBe(100);
-        expect(res.body.rounds).toBe(8);
+        expect(res.body.concurrency).toBe(20);
+        expect(res.body.rounds).toBe(12);
       }
     });
   });

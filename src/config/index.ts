@@ -8,13 +8,13 @@ export const CONFIG = {
   // HPA settings - must match k8s-hpa.yaml
   HPA_TARGET_CPU: 50,
   
-  // Stress test settings - AGGRESSIVE for HPA triggering
+  // Stress test settings - Tuned for HPA triggering without pod crashes
   STRESS: {
-    CONCURRENCY: 50,         // Concurrent requests per round
-    ROUNDS: 10,              // Number of rounds (10 * 8s = 80s total)
+    CONCURRENCY: 20,         // Concurrent requests per round (reduced to prevent overload)
+    ROUNDS: 12,              // Number of rounds (12 * 8s = 96s total)
     DURATION_MS: 8000,       // Duration per cpu-load call (8 seconds)
-    CHUNK_DURATION_MS: 500,  // Work chunk before yielding (500ms - less yielding = more CPU)
-    ITERATIONS_PER_CHUNK: 5000000, // 5M Math operations per chunk - MUCH heavier
+    CHUNK_DURATION_MS: 200,  // Work chunk before yielding (200ms - balanced)
+    ITERATIONS_PER_CHUNK: 100000, // 100K iterations - sustainable load
   },
   
   // Timeouts

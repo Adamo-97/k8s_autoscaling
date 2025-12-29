@@ -80,8 +80,10 @@ export function endStressTest(): void {
  * Execute CPU-intensive work - the core of the stress test
  * 
  * This function performs mathematical operations in a tight loop to
- * maximize CPU utilization. Uses BLOCKING operations to ensure
- * maximum CPU usage that HPA can detect.
+ * maximize CPU utilization. It yields periodically to:
+ * 1. Allow stop signals to be processed
+ * 2. Prevent liveness probe failures
+ * 3. Allow the event loop to handle SSE connections
  * 
  * @param durationMs - How long to run the stress test
  * @returns Object with elapsed time, result, and whether it was stopped
@@ -100,40 +102,31 @@ export async function executeCpuWork(durationMs: number = CONFIG.STRESS.DURATION
     return { elapsed: 0, result: 0, wasStopped: true };
   }
   
-  const chunkDuration = CONFIG.STRESS.CHUNK_DURATION_MS; // 500ms chunks
-  const iterations = CONFIG.STRESS.ITERATIONS_PER_CHUNK; // 5M iterations
-  let yieldCounter = 0;
+  const chunkDuration = CONFIG.STRESS.CHUNK_DURATION_MS;
+  const iterations = CONFIG.STRESS.ITERATIONS_PER_CHUNK;
   
   while (Date.now() - start < durationMs) {
-    // Check stop flag less frequently - every 2 seconds
-    yieldCounter++;
-    if (yieldCounter % 4 === 0 && stopStress) {
+    // Check stop flag at each chunk
+    if (stopStress) {
       wasStopped = true;
       break;
     }
     
-    // CPU-intensive BLOCKING work - runs for full chunk duration
+    // CPU-intensive work chunk
     const chunkStart = Date.now();
     while (Date.now() - chunkStart < chunkDuration) {
-      // Heavy nested loop - harder to optimize away
+      // Tight loop with expensive math operations
       for (let i = 0; i < iterations; i++) {
-        // Multiple expensive operations per iteration
+        // Operations that can't be optimized away
         const x = Math.sqrt(i + 1);
         const y = Math.sin(x) * Math.cos(x);
-        const z = Math.pow(y, 2) + Math.log(i + 1);
-        result += z * Math.tan((i % 89) + 1); // Avoid tan(90)
-        
-        // Additional memory pressure
-        if (i % 100000 === 0) {
-          result = Number(result.toFixed(6));
-        }
+        result += y * Math.tan((i % 89) + 1);
       }
     }
     
-    // Yield only every 4th chunk (every 2 seconds) to maintain high CPU
-    if (yieldCounter % 4 === 0) {
-      await new Promise(resolve => setImmediate(resolve));
-    }
+    // CRITICAL: Yield to event loop EVERY chunk
+    // This prevents: liveness probe failures, SSE disconnects, stop signal delays
+    await new Promise(resolve => setImmediate(resolve));
   }
   
   const elapsed = Date.now() - start;
