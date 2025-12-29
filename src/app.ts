@@ -211,23 +211,38 @@ function internalStopHandler(req: Request, res: Response): void {
  * Cluster status SSE endpoint
  */
 async function clusterStatusHandler(req: Request, res: Response): Promise<void> {
+  // Proper SSE headers to prevent chunked encoding errors
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  if (res.flushHeaders) res.flushHeaders();
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+  
+  // Send initial comment to establish connection
+  res.write(':ok\n\n');
+  
+  let isConnected = true;
   
   const send = (data: object) => {
-    if (!res.writableEnded) {
-      res.write(formatSSEMessage(data));
+    if (isConnected && !res.writableEnded) {
+      try {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch (e) {
+        isConnected = false;
+      }
     }
   };
   
   const fetchAndSend = async () => {
+    if (!isConnected) return;
     try {
       const status = await k8sService.fetchClusterStatus();
       send(status);
     } catch (err) {
       log.debug(`Cluster status fetch error: ${err}`);
+      // Send error state but keep connection alive
+      send({ pods: [], hpa: { error: true } });
     }
   };
   
@@ -237,9 +252,24 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
   // Periodic updates
   const intervalId = setInterval(fetchAndSend, CONFIG.TIMEOUTS.SSE_INTERVAL_MS);
   
+  // Send keepalive every 15 seconds to prevent timeout
+  const keepaliveId = setInterval(() => {
+    if (isConnected && !res.writableEnded) {
+      res.write(':keepalive\n\n');
+    }
+  }, 15000);
+  
   // Cleanup on disconnect
   req.on('close', () => {
+    isConnected = false;
     clearInterval(intervalId);
+    clearInterval(keepaliveId);
+  });
+  
+  req.on('error', () => {
+    isConnected = false;
+    clearInterval(intervalId);
+    clearInterval(keepaliveId);
   });
 }
 
