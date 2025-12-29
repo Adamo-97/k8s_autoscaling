@@ -506,18 +506,19 @@ app.post('/stop-load', async (req: Request, res: Response) => {
       await sendStopToAll(newPodIps);
     }, 1000);
     
-    // Third wave for extra safety, then reset the stop flag
+    // Third wave for extra safety (catch pods spinning up during scale)
     setTimeout(async () => {
       const finalPodIps = await getPodIPs();
       await sendStopToAll(finalPodIps);
-      // Reset stopStress flag after all pods have been signaled
-      // This allows new stress tests to start fresh
-      stopStress = false;
-    }, 2000);
+    }, 3000);
+    
+    // Fourth wave after longer delay (new pods from HPA)
+    setTimeout(async () => {
+      const latePodIps = await getPodIPs();
+      await sendStopToAll(latePodIps);
+    }, 10000);
   } catch (err) {
     // Fallback: stop locally only (already done above)
-    // Still reset flag after delay
-    setTimeout(() => { stopStress = false; }, 2000);
   }
   
   res.json(createStopResponse());
@@ -527,8 +528,8 @@ app.post('/stop-load', async (req: Request, res: Response) => {
 app.post('/internal-stop', (req: Request, res: Response) => {
   stopStress = true;
   activeStressTest = false;
-  // Reset after delay to allow new stress tests
-  setTimeout(() => { stopStress = false; }, 2000);
+  // Do NOT reset stopStress here - only reset when new stress test starts
+  // This ensures all ongoing /cpu-load work stops and stays stopped
   res.json(createInternalStopResponse());
 });
 
