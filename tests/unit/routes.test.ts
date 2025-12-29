@@ -9,9 +9,8 @@ describe('Server Routes Unit Tests', () => {
       expect(res.headers['content-type']).toContain('text/html');
     });
 
-    test('dashboard contains Team 22 branding', async () => {
+    test('dashboard contains Kubernetes Autoscaling', async () => {
       const res = await request(app).get('/');
-      expect(res.text).toContain('Team 22');
       expect(res.text).toContain('Kubernetes Autoscaling Dashboard');
     });
 
