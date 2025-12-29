@@ -100,17 +100,17 @@ describe('Kubernetes HPA Configuration Validation', () => {
     });
   });
 
-  describe('HPA scale-down behavior (critical for preventing oscillation)', () => {
+  describe('HPA scale-down behavior (optimized for faster cooldown)', () => {
     const getScaleDown = () => hpaConfig.spec.behavior.scaleDown;
 
-    test('scale-down stabilization window is at least 60 seconds', () => {
-      // This prevents oscillation by requiring stable low CPU for 60s
-      expect(getScaleDown().stabilizationWindowSeconds).toBeGreaterThanOrEqual(60);
+    test('scale-down stabilization window is 30 seconds', () => {
+      // Reduced from 60s to 30s for faster scale-down while still preventing oscillation
+      expect(getScaleDown().stabilizationWindowSeconds).toBe(30);
     });
 
-    test('scale-down uses Min selectPolicy (conservative)', () => {
-      // Min policy = more conservative = less oscillation
-      expect(getScaleDown().selectPolicy).toBe('Min');
+    test('scale-down uses Max selectPolicy (faster cooldown)', () => {
+      // Max policy = faster scale-down = quicker return to baseline
+      expect(getScaleDown().selectPolicy).toBe('Max');
     });
 
     test('scale-down has conservative Pods policy', () => {
@@ -129,18 +129,18 @@ describe('Kubernetes HPA Configuration Validation', () => {
       });
     });
 
-    test('scale-down Percent policy is conservative (≤ 20%)', () => {
+    test('scale-down Percent policy allows up to 25%', () => {
       const percentPolicy = getScaleDown().policies.find(
         (p: any) => p.type === 'Percent'
       );
       if (percentPolicy) {
-        // Should only scale down by 10-20% at a time
-        expect(percentPolicy.value).toBeLessThanOrEqual(20);
+        // Scale down by up to 25% for faster cooldown
+        expect(percentPolicy.value).toBe(25);
       }
     });
   });
 
-  describe('HPA behavior asymmetry (scale-up fast, scale-down slow)', () => {
+  describe('HPA behavior asymmetry (scale-up fast, scale-down controlled)', () => {
     test('scale-up is faster than scale-down', () => {
       const scaleUp = hpaConfig.spec.behavior.scaleUp;
       const scaleDown = hpaConfig.spec.behavior.scaleDown;
@@ -151,24 +151,25 @@ describe('Kubernetes HPA Configuration Validation', () => {
       );
     });
 
-    test('scale-up uses Max policy, scale-down uses Min', () => {
+    test('both scale-up and scale-down use Max policy for speed', () => {
+      // Both use Max for responsive scaling (fast up and fast down)
       expect(hpaConfig.spec.behavior.scaleUp.selectPolicy).toBe('Max');
-      expect(hpaConfig.spec.behavior.scaleDown.selectPolicy).toBe('Min');
+      expect(hpaConfig.spec.behavior.scaleDown.selectPolicy).toBe('Max');
     });
 
-    test('asymmetric behavior prevents oscillation', () => {
+    test('scale-down has controlled cooldown to prevent stuck state', () => {
       const scaleDown = hpaConfig.spec.behavior.scaleDown;
       
-      // Key anti-oscillation settings:
-      // 1. Long stabilization window (60s+)
-      expect(scaleDown.stabilizationWindowSeconds).toBeGreaterThanOrEqual(60);
+      // Key settings for responsive scale-down:
+      // 1. 30s stabilization window (not too long)
+      expect(scaleDown.stabilizationWindowSeconds).toBe(30);
       
-      // 2. Conservative scale-down rate
+      // 2. Reasonable scale-down rate (2 pods per period)
       const podsPolicy = scaleDown.policies.find((p: any) => p.type === 'Pods');
-      expect(podsPolicy.value).toBeLessThanOrEqual(2);
+      expect(podsPolicy.value).toBe(2);
       
-      // 3. Longer period between scale-down events
-      expect(podsPolicy.periodSeconds).toBeGreaterThanOrEqual(30);
+      // 3. 30s period between scale-down events
+      expect(podsPolicy.periodSeconds).toBe(30);
     });
   });
 

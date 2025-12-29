@@ -66,6 +66,9 @@ let lastReplicaCount = 0;
 let lastCpuReading = '';
 const HPA_TARGET_CPU = 50; // Must match k8s-hpa.yaml averageUtilization
 
+// Track active timers for cleanup (prevents stuck processes)
+const activeTimers: Set<NodeJS.Timeout> = new Set();
+
 // Middleware
 app.use(express.json());
 
@@ -563,6 +566,10 @@ app.post('/stop-load', async (req: Request, res: Response) => {
   stopStress = true;
   activeStressTest = false;
   
+  // Clear any pending timers to prevent stuck processes
+  activeTimers.forEach(timer => clearTimeout(timer));
+  activeTimers.clear();
+  
   // Helper to get current pod IPs (re-query to catch newly scaled pods)
   const getPodIPs = async (): Promise<string[]> => {
     try {
@@ -576,42 +583,49 @@ app.post('/stop-load', async (req: Request, res: Response) => {
     }
   };
   
-  // Send stop signal to all pods multiple times to ensure delivery
-  // This handles newly scaled pods that may not have received initial signal
+  // Send stop signal to all pods (with timeout to prevent hangs)
   const sendStopToAll = async (podIps: string[], wave: number) => {
+    if (!podIps.length) return;
     log.debug(`Stop wave ${wave}: sending to ${podIps.length} pods`);
     const stopPromises = podIps.map(ip => 
-      (fetch as any)(`http://${ip}:3000/internal-stop`, { method: 'POST', signal: AbortSignal.timeout(2000) }).catch(() => null)
+      (fetch as any)(`http://${ip}:3000/internal-stop`, { 
+        method: 'POST', 
+        signal: AbortSignal.timeout(1000) // 1s timeout per request
+      }).catch(() => null)
     );
     await Promise.allSettled(stopPromises);
   };
   
   try {
-    // First wave: stop all current pods
+    // First wave: stop all current pods immediately
     const podIps = await getPodIPs();
     log.stress('Stopping all pods', `Count: ${podIps.length}`);
     await sendStopToAll(podIps, 1);
     
-    // Second wave after short delay (catch any pods that just came up)
-    setTimeout(async () => {
-      const newPodIps = await getPodIPs();
-      await sendStopToAll(newPodIps, 2);
+    // Schedule follow-up waves but track timers for cleanup
+    // Use .unref() to allow process to exit if these are the only pending operations
+    const timer2 = setTimeout(async () => {
+      activeTimers.delete(timer2);
+      if (stopStress) { // Only run if still in stop mode
+        const newPodIps = await getPodIPs();
+        await sendStopToAll(newPodIps, 2);
+      }
     }, 1000);
+    timer2.unref(); // Don't keep process alive for this
+    activeTimers.add(timer2);
     
-    // Third wave for extra safety (catch pods spinning up during scale)
-    setTimeout(async () => {
-      const finalPodIps = await getPodIPs();
-      await sendStopToAll(finalPodIps, 3);
+    const timer3 = setTimeout(async () => {
+      activeTimers.delete(timer3);
+      if (stopStress) {
+        const finalPodIps = await getPodIPs();
+        await sendStopToAll(finalPodIps, 3);
+        log.stress('All stop waves complete');
+      }
     }, 3000);
-    
-    // Fourth wave after longer delay (new pods from HPA)
-    setTimeout(async () => {
-      const latePodIps = await getPodIPs();
-      await sendStopToAll(latePodIps, 4);
-      log.stress('All stop waves complete');
-    }, 10000);
+    timer3.unref();
+    activeTimers.add(timer3);
   } catch (err) {
-    // Fallback: stop locally only (already done above)
+    log.error(`Stop failed: ${err}`);
   }
   
   res.json(createStopResponse());
@@ -674,43 +688,61 @@ app.post('/generate-load', async (req: Request, res: Response) => {
   }
 
   // Fire concurrent requests to /cpu-load on each target in multiple rounds
-  (async () => {
+  // This runs in background but respects the stopStress flag
+  const runLoadTest = async () => {
     const targets = podIps.length ? podIps : ['127.0.0.1'];
     log.stress('Load distribution', `Targets: ${targets.length}, Concurrency: ${concurrency}, Rounds: ${rounds}`);
     
     for (let round = 0; round < rounds; round++) {
-      // Check if stop was requested
+      // Check if stop was requested BEFORE each round
       if (stopStress) {
         log.stress('Stopped early', `Completed ${round}/${rounds} rounds`);
         break;
       }
       
       log.debug(`Round ${round + 1}/${rounds} starting`);
+      
+      // Create fetch requests with timeouts to prevent hanging
       const tasks: Promise<any>[] = [];
       for (let i = 0; i < concurrency; i++) {
         const target = targets[i % targets.length];
         const url = `http://${target}:3000/cpu-load`;
-        const p = (fetch as any)(url, { method: 'GET' }).catch(() => null);
+        // Add timeout to prevent stuck requests
+        const p = (fetch as any)(url, { 
+          method: 'GET',
+          signal: AbortSignal.timeout(15000) // 15s timeout per request
+        }).catch(() => null);
         tasks.push(p);
       }
-      try { await Promise.all(tasks); } catch {}
+      
+      try { 
+        await Promise.all(tasks); 
+      } catch {
+        // Ignore fetch errors
+      }
+      
+      // Yield between rounds to allow stop processing
+      await new Promise(resolve => setImmediate(resolve));
     }
     
     // Auto-cleanup after stress test completes
-    // IMPORTANT: Do NOT reset stopStress here - let /stop-load handle it
-    // This prevents race conditions where ongoing /cpu-load calls continue
     const elapsed = Math.floor((Date.now() - stressStartTime) / 1000);
     log.stress('COMPLETED', `Duration: ${elapsed}s`);
     activeStressTest = false;
-    // Signal stop to ensure any stragglers finish quickly
-    stopStress = true;
-  })();
+    stopStress = true; // Signal stop to ensure any stragglers finish quickly
+  };
+  
+  // Start the load test (don't await - runs in background)
+  runLoadTest().catch(err => {
+    log.error(`Load test failed: ${err}`);
+    activeStressTest = false;
+  });
 
   res.status(202).json(createGenerateLoadResponse(podIps.length || ['service'], concurrency, rounds));
 });
 
-// SSE endpoint that runs CPU work and streams progress
-// Simple CPU load endpoint for load testing (short bursts, non-blocking)
+// Simple CPU load endpoint for load testing
+// CRITICAL: Yields to event loop periodically to allow stop signal processing
 app.get('/cpu-load', async (req: Request, res: Response) => {
   const start = Date.now();
   let result = 0;
@@ -727,20 +759,28 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
     stopStress = false;
   }
   
-  // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
-  // Check stop flag VERY frequently to allow instant abort
-  const duration = 10000;
-  const checkInterval = 10000; // Check stop flag every 10k iterations (~5ms) - 10x more frequent
-  let iterCount = 0;
+  // Perform CPU work in chunks, yielding to event loop between chunks
+  // This allows stop signals to be processed and prevents blocking
+  const duration = 10000; // 10 seconds total
+  const chunkDuration = 100; // 100ms of work per chunk
   
   while (Date.now() - start < duration) {
-    // Check stop flag frequently for instant response
-    if (iterCount % checkInterval === 0 && stopStress) {
+    // Check stop flag at the start of each chunk
+    if (stopStress) {
       wasStopped = true;
       break;
     }
-    result += Math.sqrt(iterCount) * Math.sin(iterCount) * Math.cos(iterCount) * Math.tan(iterCount % 100 + 1);
-    iterCount++;
+    
+    // Do CPU-intensive work for ~100ms
+    const chunkStart = Date.now();
+    while (Date.now() - chunkStart < chunkDuration) {
+      for (let i = 0; i < 50000; i++) {
+        result += Math.sqrt(i) * Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
+      }
+    }
+    
+    // CRITICAL: Yield to event loop so stop signals can be processed
+    await new Promise(resolve => setImmediate(resolve));
   }
   
   const elapsed = Date.now() - start;
@@ -759,15 +799,23 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
   let result = 0;
 
   function send(data: object) {
-    res.write(formatSSEMessage(data));
+    if (!res.writableEnded) {
+      res.write(formatSSEMessage(data));
+    }
   }
 
   // perform CPU work in small chunks, yielding to event loop so SSE can flush
+  // Also check stopStress flag to allow early termination
   while (Date.now() - start < duration) {
+    // Check if we should stop
+    if (stopStress || res.writableEnded) {
+      break;
+    }
+    
     const chunkStart = Date.now();
-    // busy work for ~80ms
+    // busy work for ~80ms (reduced from blocking loop)
     while (Date.now() - chunkStart < 80) {
-      for (let i = 0; i < 200000; i++) {
+      for (let i = 0; i < 50000; i++) {
         result += Math.sqrt(i) * Math.sin(i) * Math.cos(i);
       }
     }
@@ -777,17 +825,18 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
       lastProgress = progress;
       send({ progress, elapsed, result: Number(result.toFixed(6)) });
     }
-    // yield to event loop so client receives updates
+    // yield to event loop so client receives updates and stop signals process
     await new Promise((r) => setImmediate(r));
-    if (res.writableEnded) break;
   }
 
-  const totalElapsed = Date.now() - start;
-  send({ progress: 100, elapsed: totalElapsed, result: Number(result.toFixed(6)) });
-  // close stream
-  res.write('event: done\n');
-  res.write(formatSSEMessage({ status: 'complete' }));
-  res.end();
+  if (!res.writableEnded) {
+    const totalElapsed = Date.now() - start;
+    send({ progress: 100, elapsed: totalElapsed, result: Number(result.toFixed(6)) });
+    // close stream
+    res.write('event: done\n');
+    res.write(formatSSEMessage({ status: stopStress ? 'stopped' : 'complete' }));
+    res.end();
+  }
 });
 
 // Pods overview page — uses `kubectl` if available to list pods and render cards
