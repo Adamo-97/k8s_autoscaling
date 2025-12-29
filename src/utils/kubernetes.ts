@@ -88,7 +88,7 @@ export function parsePodInfo(pod: any) {
 }
 
 /**
- * Parse HPA status information
+ * Parse HPA status information (v1 API - legacy fallback)
  */
 export function parseHPAStatus(hpa: any): {
   current: number;
@@ -105,6 +105,33 @@ export function parseHPAStatus(hpa: any): {
     cpu: hpa?.status?.currentCPUUtilizationPercentage
       ? `${hpa.status.currentCPUUtilizationPercentage}%`
       : '—'
+  };
+}
+
+/**
+ * Parse HPA status information (v2 API - real-time metrics)
+ */
+export function parseHPAStatusV2(hpa: any): {
+  current: number;
+  desired: number;
+  min: number;
+  max: number;
+  cpu: string;
+  cpuValue: number | undefined;
+  conditions: any[];
+} {
+  const currentMetrics = hpa?.status?.currentMetrics || [];
+  const cpuMetric = currentMetrics.find((m: any) => m.resource?.name === 'cpu');
+  const cpuValue = cpuMetric?.resource?.current?.averageUtilization;
+  
+  return {
+    current: hpa?.status?.currentReplicas || 0,
+    desired: hpa?.status?.desiredReplicas || 0,
+    min: hpa?.spec?.minReplicas || 1,
+    max: hpa?.spec?.maxReplicas || 10,
+    cpu: cpuValue !== undefined ? `${cpuValue}%` : '—',
+    cpuValue,
+    conditions: hpa?.status?.conditions || []
   };
 }
 

@@ -7,6 +7,7 @@ import {
   formatAge,
   parsePodInfo,
   parseHPAStatus,
+  parseHPAStatusV2,
   parseKubectlPods,
   extractPodIPs,
   buildTargetUrl,
@@ -263,6 +264,71 @@ describe('Kubernetes Utility Functions', () => {
     test('handles missing CPU metric', () => {
       const hpa = { status: { currentReplicas: 3 } };
       expect(parseHPAStatus(hpa).cpu).toBe('—');
+    });
+  });
+
+  describe('parseHPAStatusV2', () => {
+    test('parses complete v2 HPA status with currentMetrics', () => {
+      const hpa = {
+        spec: { minReplicas: 2, maxReplicas: 10 },
+        status: {
+          currentReplicas: 5,
+          desiredReplicas: 6,
+          currentMetrics: [
+            {
+              type: 'Resource',
+              resource: {
+                name: 'cpu',
+                current: { averageUtilization: 75 }
+              }
+            }
+          ],
+          conditions: [{ type: 'ScalingActive', status: 'True' }]
+        }
+      };
+
+      const status = parseHPAStatusV2(hpa);
+      expect(status.current).toBe(5);
+      expect(status.desired).toBe(6);
+      expect(status.min).toBe(2);
+      expect(status.max).toBe(10);
+      expect(status.cpu).toBe('75%');
+      expect(status.cpuValue).toBe(75);
+      expect(status.conditions).toHaveLength(1);
+    });
+
+    test('returns defaults for empty v2 HPA', () => {
+      const status = parseHPAStatusV2({});
+      expect(status.current).toBe(0);
+      expect(status.desired).toBe(0);
+      expect(status.min).toBe(1);
+      expect(status.max).toBe(10);
+      expect(status.cpu).toBe('—');
+      expect(status.cpuValue).toBeUndefined();
+      expect(status.conditions).toEqual([]);
+    });
+
+    test('handles missing CPU metric in v2', () => {
+      const hpa = { 
+        status: { 
+          currentReplicas: 3,
+          currentMetrics: [
+            { resource: { name: 'memory' } }
+          ]
+        } 
+      };
+      expect(parseHPAStatusV2(hpa).cpu).toBe('—');
+      expect(parseHPAStatusV2(hpa).cpuValue).toBeUndefined();
+    });
+
+    test('handles empty currentMetrics array', () => {
+      const hpa = { 
+        status: { 
+          currentReplicas: 3,
+          currentMetrics: []
+        } 
+      };
+      expect(parseHPAStatusV2(hpa).cpu).toBe('—');
     });
   });
 

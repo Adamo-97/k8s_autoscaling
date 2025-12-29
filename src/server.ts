@@ -2,9 +2,7 @@ import express, { Request, Response } from 'express';
 import os from 'os';
 import { promisify } from 'util';
 import { exec as _exec } from 'child_process';
-import http from 'http';
-import https from 'https';
-import { KubeConfig, CoreV1Api, AutoscalingV1Api } from '@kubernetes/client-node';
+import { KubeConfig, CoreV1Api, AutoscalingV2Api } from '@kubernetes/client-node';
 import {
   parsePodInfo,
   parseHPAStatus,
@@ -24,9 +22,35 @@ import {
 
 const exec = promisify(_exec);
 
-// Node 18+ has global fetch, but ensure agents for keepalive
-const httpAgent = new http.Agent({ keepAlive: true });
-const httpsAgent = new https.Agent({ keepAlive: true });
+// ANSI color codes for terminal logging
+const COLORS = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  orange: '\x1b[38;5;208m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  magenta: '\x1b[35m',
+  blue: '\x1b[34m',
+  gray: '\x1b[90m'
+};
+
+// Structured logging with colors
+const log = {
+  info: (msg: string) => console.log(`${COLORS.cyan}[INFO]${COLORS.reset} ${msg}`),
+  scaleUp: (from: number, to: number, cpu: string) => 
+    console.log(`${COLORS.bright}${COLORS.green}[SCALE-UP]${COLORS.reset} ${COLORS.green}▲ Replicas: ${from} → ${to} | CPU: ${cpu}${COLORS.reset}`),
+  scaleDown: (from: number, to: number, cpu: string) => 
+    console.log(`${COLORS.bright}${COLORS.orange}[SCALE-DOWN]${COLORS.reset} ${COLORS.orange}▼ Replicas: ${from} → ${to} | CPU: ${cpu}${COLORS.reset}`),
+  hpaStatus: (current: number, desired: number, cpu: string, target: number) => 
+    console.log(`${COLORS.blue}[HPA]${COLORS.reset} Current: ${current} | Desired: ${desired} | CPU: ${cpu} | Target: ${target}%`),
+  stress: (action: string, details?: string) => 
+    console.log(`${COLORS.magenta}[STRESS]${COLORS.reset} ${action}${details ? ` | ${details}` : ''}`),
+  warn: (msg: string) => console.log(`${COLORS.yellow}[WARN]${COLORS.reset} ${msg}`),
+  error: (msg: string) => console.log(`${COLORS.red}[ERROR]${COLORS.reset} ${msg}`),
+  debug: (msg: string) => process.env.DEBUG && console.log(`${COLORS.gray}[DEBUG]${COLORS.reset} ${msg}`)
+};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -36,6 +60,11 @@ const POD_NAME = process.env.HOSTNAME || os.hostname();
 let stopStress = false;
 let stressStartTime = 0;
 let activeStressTest = false; // Track if a stress test is currently running
+
+// Track HPA state for detecting scaling events
+let lastReplicaCount = 0;
+let lastCpuReading = '';
+const HPA_TARGET_CPU = 50; // Must match k8s-hpa.yaml averageUtilization
 
 // Middleware
 app.use(express.json());
@@ -305,6 +334,7 @@ app.get('/', (req: Request, res: Response) => {
   res.send(html);
 });
 // SSE endpoint for real-time cluster status (pods + HPA)
+// Uses v2 HPA API for instant metrics (no delay)
 app.get('/cluster-status', async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -328,22 +358,63 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
           kc.loadFromDefault();
         }
         const k8sApi = kc.makeApiClient(CoreV1Api);
-        const hpaApi = kc.makeApiClient(AutoscalingV1Api);
+        const hpaApi = kc.makeApiClient(AutoscalingV2Api);
 
         // list pods in same namespace (default) with app label only
         const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
         const items = Array.isArray(podsResp.body.items) ? podsResp.body.items : [];
         status.pods = items.map((p: any) => parsePodInfo(p));
 
-        // list HPA (v1) in default namespace
+        // list HPA (v2) in default namespace - provides real-time metrics
         try {
           const hpaResp = await hpaApi.listNamespacedHorizontalPodAutoscaler('default');
           const hpaItems = Array.isArray(hpaResp.body.items) ? hpaResp.body.items : [];
           if (hpaItems.length > 0) {
-            status.hpa = parseHPAStatus(hpaItems[0]);
+            const hpa = hpaItems[0];
+            // Parse v2 HPA format with detailed metrics
+            const currentMetrics = hpa.status?.currentMetrics || [];
+            const cpuMetric = currentMetrics.find((m: any) => m.resource?.name === 'cpu');
+            const cpuValue = cpuMetric?.resource?.current?.averageUtilization;
+            const cpuStr = cpuValue !== undefined ? `${cpuValue}%` : '—';
+            
+            status.hpa = {
+              current: hpa.status?.currentReplicas || 0,
+              desired: hpa.status?.desiredReplicas || 0,
+              min: hpa.spec?.minReplicas || 1,
+              max: hpa.spec?.maxReplicas || 10,
+              cpu: cpuStr,
+              conditions: hpa.status?.conditions || []
+            };
+            
+            // Server-side logging for HPA state changes (with colors)
+            const currentReplicas = status.hpa.current;
+            if (lastReplicaCount > 0 && currentReplicas !== lastReplicaCount) {
+              if (currentReplicas > lastReplicaCount) {
+                log.scaleUp(lastReplicaCount, currentReplicas, cpuStr);
+              } else {
+                log.scaleDown(lastReplicaCount, currentReplicas, cpuStr);
+              }
+            }
+            
+            // Log HPA diagnostics periodically (every 10s or on CPU change)
+            if (cpuStr !== lastCpuReading) {
+              log.hpaStatus(currentReplicas, status.hpa.desired, cpuStr, HPA_TARGET_CPU);
+              
+              // Diagnostic: explain why HPA isn't scaling
+              if (cpuValue !== undefined && currentReplicas > 1) {
+                if (cpuValue < HPA_TARGET_CPU) {
+                  log.debug(`CPU ${cpuValue}% < target ${HPA_TARGET_CPU}% - HPA should scale down after stabilization window`);
+                } else if (cpuValue >= HPA_TARGET_CPU) {
+                  log.debug(`CPU ${cpuValue}% >= target ${HPA_TARGET_CPU}% - HPA will maintain or increase replicas`);
+                }
+              }
+              lastCpuReading = cpuStr;
+            }
+            lastReplicaCount = currentReplicas;
           }
         } catch (e) {
-          // ignore HPA errors
+          // Fallback to v1-style parsing if v2 fails
+          log.warn(`HPA v2 API error, falling back: ${e}`);
         }
       } catch (err) {
         // Fallback: try kubectl shell (useful for local dev when kubeconfig is present)
@@ -351,6 +422,24 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
           const { stdout: podOut } = await exec('kubectl get pods -l app=k8s-autoscaling -o json -n default');
           const items = parseKubectlPods(podOut);
           status.pods = items.map((p: any) => parsePodInfo(p));
+          
+          // Also try to get HPA via kubectl
+          try {
+            const { stdout: hpaOut } = await exec('kubectl get hpa k8s-autoscaling-hpa -o json -n default');
+            const hpa = JSON.parse(hpaOut);
+            const currentMetrics = hpa.status?.currentMetrics || [];
+            const cpuMetric = currentMetrics.find((m: any) => m.resource?.name === 'cpu');
+            const cpuValue = cpuMetric?.resource?.current?.averageUtilization;
+            status.hpa = {
+              current: hpa.status?.currentReplicas || 0,
+              desired: hpa.status?.desiredReplicas || 0,
+              min: hpa.spec?.minReplicas || 1,
+              max: hpa.spec?.maxReplicas || 10,
+              cpu: cpuValue !== undefined ? `${cpuValue}%` : '—'
+            };
+          } catch (hpaErr) {
+            // HPA not available
+          }
         } catch (e) {
           // give up; status.pods stays empty
         }
@@ -365,14 +454,14 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
   // Send initial status
   await fetchStatus();
 
-  // Poll every 2 seconds
+  // Poll every 1 second for more responsive metrics (reduced from 2s)
   const interval = setInterval(async () => {
     if (res.writableEnded) {
       clearInterval(interval);
       return;
     }
     await fetchStatus();
-  }, 2000);
+  }, 1000);
 
   req.on('close', () => {
     clearInterval(interval);
@@ -470,6 +559,7 @@ app.get('/stress', (req: Request, res: Response) => {
 
 // Endpoint to stop all CPU stress tests
 app.post('/stop-load', async (req: Request, res: Response) => {
+  log.stress('STOP requested', `Active test: ${activeStressTest}`);
   stopStress = true;
   activeStressTest = false;
   
@@ -488,7 +578,8 @@ app.post('/stop-load', async (req: Request, res: Response) => {
   
   // Send stop signal to all pods multiple times to ensure delivery
   // This handles newly scaled pods that may not have received initial signal
-  const sendStopToAll = async (podIps: string[]) => {
+  const sendStopToAll = async (podIps: string[], wave: number) => {
+    log.debug(`Stop wave ${wave}: sending to ${podIps.length} pods`);
     const stopPromises = podIps.map(ip => 
       (fetch as any)(`http://${ip}:3000/internal-stop`, { method: 'POST', signal: AbortSignal.timeout(2000) }).catch(() => null)
     );
@@ -498,24 +589,26 @@ app.post('/stop-load', async (req: Request, res: Response) => {
   try {
     // First wave: stop all current pods
     const podIps = await getPodIPs();
-    await sendStopToAll(podIps);
+    log.stress('Stopping all pods', `Count: ${podIps.length}`);
+    await sendStopToAll(podIps, 1);
     
     // Second wave after short delay (catch any pods that just came up)
     setTimeout(async () => {
       const newPodIps = await getPodIPs();
-      await sendStopToAll(newPodIps);
+      await sendStopToAll(newPodIps, 2);
     }, 1000);
     
     // Third wave for extra safety (catch pods spinning up during scale)
     setTimeout(async () => {
       const finalPodIps = await getPodIPs();
-      await sendStopToAll(finalPodIps);
+      await sendStopToAll(finalPodIps, 3);
     }, 3000);
     
     // Fourth wave after longer delay (new pods from HPA)
     setTimeout(async () => {
       const latePodIps = await getPodIPs();
-      await sendStopToAll(latePodIps);
+      await sendStopToAll(latePodIps, 4);
+      log.stress('All stop waves complete');
     }, 10000);
   } catch (err) {
     // Fallback: stop locally only (already done above)
@@ -526,6 +619,7 @@ app.post('/stop-load', async (req: Request, res: Response) => {
 
 // Internal endpoint for pods to receive stop signals from other pods
 app.post('/internal-stop', (req: Request, res: Response) => {
+  log.debug(`Internal stop received on ${POD_NAME}`);
   stopStress = true;
   activeStressTest = false;
   // Do NOT reset stopStress here - only reset when new stress test starts
@@ -537,12 +631,14 @@ app.post('/internal-stop', (req: Request, res: Response) => {
 app.post('/generate-load', async (req: Request, res: Response) => {
   // Prevent multiple concurrent stress tests
   if (activeStressTest) {
+    log.warn('Stress test already running - rejecting new request');
     return res.status(409).json(createConcurrentTestError());
   }
   
   activeStressTest = true;
   stopStress = false; // Reset stop flag
   stressStartTime = Date.now();
+  log.stress('STARTED', `Time: ${new Date().toISOString()}`);
   
   const concurrency = 50; // Increased from 20 for more load
   const rounds = 6; // Run 6 rounds of 10 seconds each = 60 seconds total
@@ -580,12 +676,16 @@ app.post('/generate-load', async (req: Request, res: Response) => {
   // Fire concurrent requests to /cpu-load on each target in multiple rounds
   (async () => {
     const targets = podIps.length ? podIps : ['127.0.0.1'];
+    log.stress('Load distribution', `Targets: ${targets.length}, Concurrency: ${concurrency}, Rounds: ${rounds}`);
+    
     for (let round = 0; round < rounds; round++) {
       // Check if stop was requested
       if (stopStress) {
+        log.stress('Stopped early', `Completed ${round}/${rounds} rounds`);
         break;
       }
       
+      log.debug(`Round ${round + 1}/${rounds} starting`);
       const tasks: Promise<any>[] = [];
       for (let i = 0; i < concurrency; i++) {
         const target = targets[i % targets.length];
@@ -599,6 +699,8 @@ app.post('/generate-load', async (req: Request, res: Response) => {
     // Auto-cleanup after stress test completes
     // IMPORTANT: Do NOT reset stopStress here - let /stop-load handle it
     // This prevents race conditions where ongoing /cpu-load calls continue
+    const elapsed = Math.floor((Date.now() - stressStartTime) / 1000);
+    log.stress('COMPLETED', `Duration: ${elapsed}s`);
     activeStressTest = false;
     // Signal stop to ensure any stragglers finish quickly
     stopStress = true;
@@ -614,20 +716,26 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   let result = 0;
   let wasStopped = false;
   
+  // CRITICAL: Check stop flag BEFORE starting any work
+  // This prevents newly scaled pods from doing unnecessary work
+  if (stopStress) {
+    return res.json(createStressResult(0, 0, true, POD_NAME));
+  }
+  
   // If no active stress test, assume direct call - reset stop flag
   if (!activeStressTest) {
     stopStress = false;
   }
   
   // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
-  // Check stop flag frequently to allow quick abort
+  // Check stop flag VERY frequently to allow instant abort
   const duration = 10000;
-  const checkInterval = 100000; // Check stop flag every 100k iterations (~50ms)
+  const checkInterval = 10000; // Check stop flag every 10k iterations (~5ms) - 10x more frequent
   let iterCount = 0;
   
   while (Date.now() - start < duration) {
-    // Check stop flag periodically (but not on first iteration)
-    if (iterCount > 0 && iterCount % checkInterval === 0 && stopStress) {
+    // Check stop flag frequently for instant response
+    if (iterCount % checkInterval === 0 && stopStress) {
       wasStopped = true;
       break;
     }
@@ -703,9 +811,17 @@ app.get('/pods', async (req: Request, res: Response) => {
 // Start the server
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`[SERVER] Running on port ${PORT}`);
-    console.log(`[POD] Name: ${POD_NAME}`);
-    console.log(`[ENV] Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`${COLORS.bright}${COLORS.cyan}╔════════════════════════════════════════════════════════════╗${COLORS.reset}`);
+    console.log(`${COLORS.bright}${COLORS.cyan}║${COLORS.reset}  ${COLORS.green}K8s Autoscaling Demo Server${COLORS.reset}                              ${COLORS.cyan}║${COLORS.reset}`);
+    console.log(`${COLORS.bright}${COLORS.cyan}╠════════════════════════════════════════════════════════════╣${COLORS.reset}`);
+    console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}Port:${COLORS.reset}        ${COLORS.green}${PORT}${COLORS.reset}                                          ${COLORS.cyan}║${COLORS.reset}`);
+    console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}Pod:${COLORS.reset}         ${COLORS.yellow}${POD_NAME}${COLORS.reset}`);
+    console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}Environment:${COLORS.reset} ${process.env.NODE_ENV || 'development'}`);
+    console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}PID:${COLORS.reset}         ${process.pid}`);
+    console.log(`${COLORS.cyan}║${COLORS.reset}  ${COLORS.gray}Node:${COLORS.reset}        ${process.version}`);
+    console.log(`${COLORS.bright}${COLORS.cyan}╚════════════════════════════════════════════════════════════╝${COLORS.reset}`);
+    log.info('Server started successfully');
+    log.info(`HPA Target CPU: ${HPA_TARGET_CPU}% (scale up above, scale down below)`);
   });
 }
 

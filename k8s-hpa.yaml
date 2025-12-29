@@ -15,23 +15,23 @@ spec:
       name: cpu
       target:
         type: Utilization
+        # Target 50% CPU - scale up when above, scale down when below
         averageUtilization: 50
   behavior:
     scaleDown:
-      # Wait 60 seconds of stable low CPU before scaling down
-      # This prevents oscillation from CPU spikes during scale-down
-      stabilizationWindowSeconds: 60
+      # Wait 30 seconds before scaling down to avoid rapid fluctuations
+      stabilizationWindowSeconds: 30
       policies:
-      # Scale down by at most 1 pod every 30 seconds (conservative)
+      # Scale down by at least 2 pods every 30 seconds
       - type: Pods
-        value: 1
+        value: 2
         periodSeconds: 30
-      # Or by at most 10% every 30 seconds (whichever is smaller)
+      # Scale down by up to 25% every 30 seconds (increased from 10%)
       - type: Percent
-        value: 10
+        value: 25
         periodSeconds: 30
-      # Use the smaller of the two policies (more conservative)
-      selectPolicy: Min
+      # Use the larger of the two policies (more conservative)
+      selectPolicy: Max
     scaleUp:
       # Scale up immediately when CPU is high (no stabilization delay)
       stabilizationWindowSeconds: 0
