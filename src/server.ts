@@ -612,6 +612,12 @@ app.post('/generate-load', async (req: Request, res: Response) => {
 app.get('/cpu-load', async (req: Request, res: Response) => {
   const start = Date.now();
   let result = 0;
+  let wasStopped = false;
+  
+  // If no active stress test, assume direct call - reset stop flag
+  if (!activeStressTest) {
+    stopStress = false;
+  }
   
   // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
   // Check stop flag frequently to allow quick abort
@@ -620,8 +626,9 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   let iterCount = 0;
   
   while (Date.now() - start < duration) {
-    // Check stop flag periodically
-    if (iterCount % checkInterval === 0 && stopStress) {
+    // Check stop flag periodically (but not on first iteration)
+    if (iterCount > 0 && iterCount % checkInterval === 0 && stopStress) {
+      wasStopped = true;
       break;
     }
     result += Math.sqrt(iterCount) * Math.sin(iterCount) * Math.cos(iterCount) * Math.tan(iterCount % 100 + 1);
@@ -629,8 +636,7 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   }
   
   const elapsed = Date.now() - start;
-  const stopped = stopStress;
-  res.json(createStressResult(elapsed, result, stopped, POD_NAME));
+  res.json(createStressResult(elapsed, result, wasStopped, POD_NAME));
 });
 
 app.get('/stress-stream', async (req: Request, res: Response) => {

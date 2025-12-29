@@ -303,13 +303,6 @@ describe('Server Routes Unit Tests', () => {
   });
 
   describe('GET /cpu-load', () => {
-    // Reset stop flag before each test by calling stop-load and waiting
-    beforeEach(async () => {
-      await request(app).post('/stop-load');
-      // Wait for the stop flag to reset (2 seconds + buffer)
-      await new Promise(resolve => setTimeout(resolve, 2500));
-    });
-
     test('returns JSON response with 200 status', async () => {
       const res = await request(app).get('/cpu-load');
       expect(res.status).toBe(200);
