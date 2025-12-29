@@ -115,7 +115,14 @@ app.get('/', (req: Request, res: Response) => {
     .hpa-info{display:flex;gap:20px;flex-wrap:wrap}
     .hpa-info > div{flex:1;min-width:120px}
     #logs{background:rgba(0,0,0,0.3);padding:12px;border-radius:6px;max-height:200px;overflow-y:auto;font-size:11px;line-height:1.6;color:var(--muted)}
-    .log-entry{margin:2px 0}
+    .log-entry{margin:2px 0;padding:4px 8px;border-radius:4px}
+    .log-entry.scale-up{background:rgba(110,231,183,0.15);color:#6ee7b7;border-left:3px solid #6ee7b7}
+    .log-entry.scale-down{background:rgba(251,146,60,0.15);color:#fb923c;border-left:3px solid #fb923c}
+    .log-entry.hpa-status{background:rgba(96,165,250,0.1);color:#60a5fa;border-left:3px solid #60a5fa}
+    .log-entry.stress{background:rgba(192,132,252,0.1);color:#c084fc;border-left:3px solid #c084fc}
+    .log-entry.pod-new{background:rgba(250,204,21,0.1);color:#facc15;border-left:3px solid #facc15}
+    .log-entry.error{background:rgba(248,113,113,0.1);color:#f87171;border-left:3px solid #f87171}
+    .log-entry.info{color:var(--muted)}
   </style>
 </head>
 <body>
@@ -169,12 +176,29 @@ app.get('/', (req: Request, res: Response) => {
     let initialReplicas = null;
     let peakReplicas = 0;
     let lastReplicaCount = 0;
+    let lastCpuValue = null;
 
-    function log(msg) {
+    // Colored event logging for the dashboard
+    function logEvent(type, msg) {
       const logs = document.getElementById('logs');
       const time = new Date().toLocaleTimeString();
-      logs.innerHTML = '<div class="log-entry">[' + time + '] ' + msg + '</div>' + logs.innerHTML;
+      const icons = {
+        'scale-up': '▲',
+        'scale-down': '▼',
+        'hpa-status': '◉',
+        'stress': '⚡',
+        'pod-new': '✦',
+        'error': '✕',
+        'info': '•'
+      };
+      const icon = icons[type] || '•';
+      logs.innerHTML = '<div class="log-entry ' + type + '">[' + time + '] ' + icon + ' ' + msg + '</div>' + logs.innerHTML;
+      // Keep only last 50 entries
+      while (logs.children.length > 50) logs.removeChild(logs.lastChild);
     }
+    
+    // Backward compatible log function
+    function log(msg) { logEvent('info', msg); }
 
     function updateUptime() {
       const sec = Math.floor((Date.now() - startTime) / 1000);
@@ -198,25 +222,33 @@ app.get('/', (req: Request, res: Response) => {
             const desired = data.hpa.desired || 0;
             const min = data.hpa.min || 1;
             const max = data.hpa.max || 10;
+            const cpuStr = data.hpa.cpu || '—';
             
             // Track scaling progress
             if (initialReplicas === null && current > 0) {
               initialReplicas = current;
-              log('Initial replica count: ' + initialReplicas);
+              logEvent('info', 'Initial replica count: ' + initialReplicas);
             }
             if (current > peakReplicas) {
               peakReplicas = current;
             }
             
-            // Detect scaling events
+            // Detect scaling events with COLORED logs
             if (current !== lastReplicaCount && lastReplicaCount > 0) {
               if (current > lastReplicaCount) {
-                log('+++++++++++ SCALING UP: ' + lastReplicaCount + ' → ' + current + ' replicas');
+                logEvent('scale-up', 'SCALING UP: ' + lastReplicaCount + ' → ' + current + ' replicas | CPU: ' + cpuStr);
               } else {
-                log('----------- SCALING DOWN: ' + lastReplicaCount + ' → ' + current + ' replicas');
+                logEvent('scale-down', 'SCALING DOWN: ' + lastReplicaCount + ' → ' + current + ' replicas | CPU: ' + cpuStr);
               }
             }
             lastReplicaCount = current;
+            
+            // Log CPU status periodically (when it changes significantly)
+            const cpuNum = parseInt(cpuStr);
+            if (!isNaN(cpuNum) && lastCpuValue !== null && Math.abs(cpuNum - lastCpuValue) >= 10) {
+              logEvent('hpa-status', 'CPU: ' + cpuStr + ' (target: 50%) | Replicas: ' + current + '/' + desired);
+            }
+            lastCpuValue = isNaN(cpuNum) ? lastCpuValue : cpuNum;
             
             // Update display
             const scalingText = initialReplicas !== null ? 
@@ -224,7 +256,7 @@ app.get('/', (req: Request, res: Response) => {
             document.getElementById('scaling-progress').textContent = scalingText;
             document.getElementById('current-desired').textContent = current + ' / ' + desired;
             document.getElementById('min-max').textContent = min + ' / ' + max;
-            document.getElementById('cpu-usage').textContent = data.hpa.cpu || '—';
+            document.getElementById('cpu-usage').textContent = cpuStr;
             
             // Scaling bar shows progress from min to max
             const scalingPercent = Math.min(100, Math.max(0, ((current - min) / (max - min)) * 100));
@@ -244,7 +276,7 @@ app.get('/', (req: Request, res: Response) => {
               if (isNew) {
                 knownPods.add(p.name);
                 podCreationTimes.set(p.name, now);
-                log('[[POD]] New pod created: ' + p.name);
+                logEvent('pod-new', 'New pod created: ' + p.name);
               }
               
               const cardClass = isRecent ? 'pod-card scaling-up' : 'pod-card';
@@ -262,7 +294,7 @@ app.get('/', (req: Request, res: Response) => {
         } catch(e) { console.error(e); }
       };
       clusterES.onerror = () => {
-        log('Cluster SSE disconnected, reconnecting...');
+        logEvent('error', 'Cluster SSE disconnected, reconnecting...');
         setTimeout(connectCluster, 2000);
       };
     }
@@ -275,7 +307,7 @@ app.get('/', (req: Request, res: Response) => {
       document.getElementById('start-stress').disabled = true;
       document.getElementById('stop-stress').disabled = false;
       document.getElementById('stress-status').textContent = 'Running';
-      log('CPU stress started');
+      logEvent('stress', 'CPU stress test STARTED - distributing load across pods');
 
         // Instead of streaming from a single pod, call the server to generate distributed load
         fetch('/generate-load', { method: 'POST' }).then(() => {
@@ -292,7 +324,7 @@ app.get('/', (req: Request, res: Response) => {
               clearInterval(window.stressInterval);
               // CRITICAL: Call /stop-load to ensure all pods stop their CPU work
               fetch('/stop-load', { method: 'POST' }).then(() => {
-                log('Stop signal sent to all pods');
+                logEvent('stress', 'Stop signal sent to all pods');
               }).catch(() => {});
               // Re-enable button after load completes
               setTimeout(() => {
@@ -300,7 +332,7 @@ app.get('/', (req: Request, res: Response) => {
                 document.getElementById('stop-stress').disabled = true;
                 document.getElementById('stress-status').textContent = 'Idle';
                 document.getElementById('stress-bar').style.width = '0%';
-                log('CPU stress completed');
+                logEvent('stress', 'CPU stress test COMPLETED');
               }, 1000);
             }
             document.getElementById('stress-bar').style.width = progress + '%';
@@ -309,6 +341,7 @@ app.get('/', (req: Request, res: Response) => {
           document.getElementById('stress-status').textContent = 'Error starting load';
           document.getElementById('start-stress').disabled = false;
           document.getElementById('stop-stress').disabled = true;
+          logEvent('error', 'Failed to start stress test');
         });
     };
 
@@ -324,13 +357,13 @@ app.get('/', (req: Request, res: Response) => {
         document.getElementById('stop-stress').disabled = true;
         document.getElementById('stress-status').textContent = 'Stopped';
         document.getElementById('stress-bar').style.width = '0%';
-        log('CPU stress stopped');
+        logEvent('stress', 'CPU stress test STOPPED by user');
       }).catch((e) => {
-        log('Stop request failed: ' + e.message);
+        logEvent('error', 'Stop request failed: ' + e.message);
       });
     };
 
-    log('Dashboard initialized');
+    logEvent('info', 'Dashboard initialized - connected to cluster');
   </script>
 </body>
 </html>`;

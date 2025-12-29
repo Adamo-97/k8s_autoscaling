@@ -190,7 +190,7 @@ describe('Comprehensive Code Path Coverage', () => {
       const res = await request(app).get('/');
       const html = res.text;
       
-      expect(html).toContain('[[POD]] New pod created');
+      expect(html).toContain("logEvent('pod-new'");
       expect(html).toContain('knownPods.has');
       expect(html).toContain('knownPods.add');
       expect(html).toContain('podCreationTimes.set');
