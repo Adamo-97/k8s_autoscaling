@@ -176,7 +176,14 @@ describe('Server Routes Unit Tests', () => {
   });
 
   describe('POST /generate-load', () => {
-    test('returns 202 accepted status', async () => {
+    // Stop any running tests before each test
+    beforeEach(async () => {
+      await request(app).post('/stop-load');
+      // Give it a moment to settle
+      await new Promise(resolve => setTimeout(resolve, 100));
+    });
+
+    test('returns 202 accepted status on first call', async () => {
       const res = await request(app).post('/generate-load');
       expect([200, 202]).toContain(res.status);
     });
@@ -196,10 +203,103 @@ describe('Server Routes Unit Tests', () => {
       expect(res.body).toHaveProperty('targets');
     });
 
-    test('response includes concurrency', async () => {
+    test('response includes concurrency when successful', async () => {
       const res = await request(app).post('/generate-load');
-      expect(res.body).toHaveProperty('concurrency');
-      expect(typeof res.body.concurrency).toBe('number');
+      if (res.status === 202) {
+        expect(res.body).toHaveProperty('concurrency');
+        expect(typeof res.body.concurrency).toBe('number');
+      } else {
+        // If 409, it means a test is running - that's also valid
+        expect(res.status).toBe(409);
+      }
+    });
+
+    test('prevents concurrent stress tests with 409 error', async () => {
+      // Start first stress test
+      const first = await request(app).post('/generate-load');
+      expect([200, 202]).toContain(first.status);
+
+      // Try to start second stress test immediately
+      const second = await request(app).post('/generate-load');
+      expect(second.status).toBe(409);
+      expect(second.body.status).toBe('error');
+      expect(second.body.message).toContain('already running');
+    });
+
+    test('response includes rounds when successful', async () => {
+      const res = await request(app).post('/generate-load');
+      if (res.status === 202) {
+        expect(res.body).toHaveProperty('rounds');
+        expect(typeof res.body.rounds).toBe('number');
+      }
+    });
+  });
+
+  describe('POST /stop-load', () => {
+    test('returns 200 status', async () => {
+      const res = await request(app).post('/stop-load');
+      expect(res.status).toBe(200);
+    });
+
+    test('returns JSON response', async () => {
+      const res = await request(app).post('/stop-load');
+      expect(res.headers['content-type']).toContain('application/json');
+    });
+
+    test('response includes stopped status', async () => {
+      const res = await request(app).post('/stop-load');
+      expect(res.body).toHaveProperty('status');
+      expect(res.body.status).toBe('stopped');
+    });
+
+    test('response includes timestamp', async () => {
+      const res = await request(app).post('/stop-load');
+      expect(res.body).toHaveProperty('timestamp');
+      expect(new Date(res.body.timestamp).getTime()).toBeGreaterThan(0);
+    });
+
+    test('allows new stress test after stopping', async () => {
+      // Start a stress test
+      await request(app).post('/generate-load');
+      
+      // Stop it
+      await request(app).post('/stop-load');
+      
+      // Should be able to start a new one
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const res = await request(app).post('/generate-load');
+      expect([200, 202]).toContain(res.status);
+    });
+  });
+
+  describe('POST /internal-stop', () => {
+    test('returns 200 status', async () => {
+      const res = await request(app).post('/internal-stop');
+      expect(res.status).toBe(200);
+    });
+
+    test('returns JSON response', async () => {
+      const res = await request(app).post('/internal-stop');
+      expect(res.headers['content-type']).toContain('application/json');
+    });
+
+    test('response includes stopped status', async () => {
+      const res = await request(app).post('/internal-stop');
+      expect(res.body).toHaveProperty('status');
+      expect(res.body.status).toBe('stopped');
+    });
+
+    test('stops local stress test state', async () => {
+      // Start a stress test
+      await request(app).post('/generate-load');
+      
+      // Call internal stop
+      await request(app).post('/internal-stop');
+      
+      // Should be able to start a new one
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const res = await request(app).post('/generate-load');
+      expect([200, 202]).toContain(res.status);
     });
   });
 

@@ -18,22 +18,31 @@ spec:
         averageUtilization: 50
   behavior:
     scaleDown:
-      stabilizationWindowSeconds: 10
+      # Wait 60 seconds of stable low CPU before scaling down
+      # This prevents oscillation from CPU spikes during scale-down
+      stabilizationWindowSeconds: 60
       policies:
-      - type: Percent
-        value: 50
-        periodSeconds: 15
+      # Scale down by at most 1 pod every 30 seconds (conservative)
       - type: Pods
         value: 1
-        periodSeconds: 15
+        periodSeconds: 30
+      # Or by at most 10% every 30 seconds (whichever is smaller)
+      - type: Percent
+        value: 10
+        periodSeconds: 30
+      # Use the smaller of the two policies (more conservative)
       selectPolicy: Min
     scaleUp:
+      # Scale up immediately when CPU is high (no stabilization delay)
       stabilizationWindowSeconds: 0
       policies:
+      # Scale up aggressively: double every 15 seconds if needed
       - type: Percent
         value: 100
         periodSeconds: 15
+      # Or add at least 2 pods every 15 seconds
       - type: Pods
         value: 2
         periodSeconds: 15
+      # Use the larger of the two policies (more aggressive)
       selectPolicy: Max

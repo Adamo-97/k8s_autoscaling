@@ -5,6 +5,23 @@ import { exec as _exec } from 'child_process';
 import http from 'http';
 import https from 'https';
 import { KubeConfig, CoreV1Api, AutoscalingV1Api } from '@kubernetes/client-node';
+import {
+  parsePodInfo,
+  parseHPAStatus,
+  parseKubectlPods,
+  extractPodIPs,
+  formatSSEMessage,
+  createStressResult,
+  createHealthResponse,
+  createStopResponse,
+  createGenerateLoadResponse,
+  createConcurrentTestError,
+  createInternalStopResponse,
+  generatePodCardHtml,
+  generatePodsPageHtml,
+  generatePodsErrorHtml
+} from './utils/kubernetes';
+
 const exec = promisify(_exec);
 
 // Node 18+ has global fetch, but ensure agents for keepalive
@@ -286,7 +303,7 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
   res.flushHeaders && res.flushHeaders();
 
   const send = (data: object) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    res.write(formatSSEMessage(data));
   };
 
   const fetchStatus = async () => {
@@ -307,39 +324,14 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
         // list pods in same namespace (default) with app label only
         const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
         const items = Array.isArray(podsResp.body.items) ? podsResp.body.items : [];
-        status.pods = items.map((p: any) => {
-          const creationTime = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
-          const ageSeconds = creationTime ? Math.floor((Date.now() - creationTime) / 1000) : 9999;
-          return {
-            name: p.metadata?.name || 'unknown',
-            namespace: p.metadata?.namespace || 'default',
-            phase: p.status?.phase || 'Unknown',
-            ip: p.status?.podIP || '-',
-            ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
-            restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
-            ageSeconds,
-            age: (() => {
-              if (ageSeconds === 9999) return '-';
-              if (ageSeconds < 60) return ageSeconds + 's';
-              if (ageSeconds < 3600) return Math.floor(ageSeconds / 60) + 'm';
-              return Math.floor(ageSeconds / 3600) + 'h';
-            })()
-          };
-        });
+        status.pods = items.map((p: any) => parsePodInfo(p));
 
         // list HPA (v1) in default namespace
         try {
           const hpaResp = await hpaApi.listNamespacedHorizontalPodAutoscaler('default');
           const hpaItems = Array.isArray(hpaResp.body.items) ? hpaResp.body.items : [];
           if (hpaItems.length > 0) {
-            const h = hpaItems[0];
-            status.hpa = {
-              current: h.status?.currentReplicas || 0,
-              desired: h.status?.desiredReplicas || 0,
-              min: h.spec?.minReplicas || 1,
-              max: h.spec?.maxReplicas || 10,
-              cpu: h.status?.currentCPUUtilizationPercentage ? String(h.status.currentCPUUtilizationPercentage) + '%' : '—'
-            };
+            status.hpa = parseHPAStatus(hpaItems[0]);
           }
         } catch (e) {
           // ignore HPA errors
@@ -348,24 +340,8 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
         // Fallback: try kubectl shell (useful for local dev when kubeconfig is present)
         try {
           const { stdout: podOut } = await exec('kubectl get pods -l app=k8s-autoscaling -o json -n default');
-          const podObj = JSON.parse(podOut || '{}');
-          const items = Array.isArray(podObj.items) ? podObj.items : [];
-          status.pods = items.map((p: any) => ({
-            name: p.metadata?.name || 'unknown',
-            namespace: p.metadata?.namespace || 'default',
-            phase: p.status?.phase || 'Unknown',
-            ip: p.status?.podIP || '-',
-            ready: (p.status?.containerStatuses?.filter((c: any) => c.ready).length || 0) + '/' + (p.status?.containerStatuses?.length || 0),
-            restarts: p.status?.containerStatuses?.reduce((s: number, c: any) => s + (c.restartCount || 0), 0) || 0,
-            age: (() => {
-              const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
-              if (!t) return '-';
-              const s = Math.floor((Date.now() - t) / 1000);
-              if (s < 60) return s + 's';
-              if (s < 3600) return Math.floor(s/60) + 'm';
-              return Math.floor(s/3600) + 'h';
-            })()
-          }));
+          const items = parseKubectlPods(podOut);
+          status.pods = items.map((p: any) => parsePodInfo(p));
         } catch (e) {
           // give up; status.pods stays empty
         }
@@ -396,13 +372,7 @@ app.get('/cluster-status', async (req: Request, res: Response) => {
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
-  res.json({
-    status: 'healthy',
-    pod: POD_NAME,
-    timestamp: new Date().toISOString(),
-    pid: process.pid,
-    memory: process.memoryUsage()
-  });
+  res.json(createHealthResponse(POD_NAME));
 });
 
 // CPU-intensive stress endpoint for testing autoscaling
@@ -500,7 +470,7 @@ app.post('/stop-load', async (req: Request, res: Response) => {
     try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
     const k8sApi = kc.makeApiClient(CoreV1Api);
     const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
-    const podIps: string[] = (podsResp.body.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+    const podIps = extractPodIPs(podsResp.body.items || []);
     
     // Send stop signal to all pods
     const stopPromises = podIps.map(ip => 
@@ -511,24 +481,21 @@ app.post('/stop-load', async (req: Request, res: Response) => {
     // Fallback: stop locally only
   }
   
-  res.json({ status: 'stopped', timestamp: new Date().toISOString() });
+  res.json(createStopResponse());
 });
 
 // Internal endpoint for pods to receive stop signals from other pods
 app.post('/internal-stop', (req: Request, res: Response) => {
   stopStress = true;
   activeStressTest = false;
-  res.json({ status: 'stopped' });
+  res.json(createInternalStopResponse());
 });
 
 // Endpoint to trigger distributed load across pods
 app.post('/generate-load', async (req: Request, res: Response) => {
   // Prevent multiple concurrent stress tests
   if (activeStressTest) {
-    return res.status(409).json({ 
-      status: 'error', 
-      message: 'A stress test is already running. Stop it first before starting a new one.' 
-    });
+    return res.status(409).json(createConcurrentTestError());
   }
   
   activeStressTest = true;
@@ -545,12 +512,12 @@ app.post('/generate-load', async (req: Request, res: Response) => {
     try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
     const k8sApi = kc.makeApiClient(CoreV1Api);
     const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
-    podIps = (podsResp.body.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+    podIps = extractPodIPs(podsResp.body.items || []);
   } catch (err) {
     try {
       const { stdout } = await exec("kubectl get pods -l app=k8s-autoscaling -o json -n default");
-      const obj = JSON.parse(stdout || '{}');
-      podIps = (obj.items || []).map((p: any) => p.status?.podIP).filter(Boolean);
+      const items = parseKubectlPods(stdout);
+      podIps = extractPodIPs(items);
     } catch (e) {
       // ignore
     }
@@ -592,7 +559,7 @@ app.post('/generate-load', async (req: Request, res: Response) => {
     stopStress = false;
   })();
 
-  res.status(202).json({ status: 'started', targets: podIps.length || ['service'], concurrency, rounds });
+  res.status(202).json(createGenerateLoadResponse(podIps.length || ['service'], concurrency, rounds));
 });
 
 // SSE endpoint that runs CPU work and streams progress
@@ -612,12 +579,7 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   
   const elapsed = Date.now() - start;
   const stopped = stopStress;
-  res.json({ 
-    status: stopped ? 'stopped' : 'complete', 
-    elapsed, 
-    result: result.toFixed(2),
-    pod: POD_NAME 
-  });
+  res.json(createStressResult(elapsed, result, stopped, POD_NAME));
 });
 
 app.get('/stress-stream', async (req: Request, res: Response) => {
@@ -632,7 +594,7 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
   let result = 0;
 
   function send(data: object) {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    res.write(formatSSEMessage(data));
   }
 
   // perform CPU work in small chunks, yielding to event loop so SSE can flush
@@ -659,7 +621,7 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
   send({ progress: 100, elapsed: totalElapsed, result: Number(result.toFixed(6)) });
   // close stream
   res.write('event: done\n');
-  res.write(`data: ${JSON.stringify({ status: 'complete' })}\n\n`);
+  res.write(formatSSEMessage({ status: 'complete' }));
   res.end();
 });
 
@@ -667,66 +629,17 @@ app.get('/stress-stream', async (req: Request, res: Response) => {
 app.get('/pods', async (req: Request, res: Response) => {
   try {
     const { stdout } = await exec('kubectl get pods -o json --all-namespaces');
-    const obj = JSON.parse(stdout || '{}');
-    const items = Array.isArray(obj.items) ? obj.items : [];
+    const items = parseKubectlPods(stdout);
 
     const cards = items.map((p: any) => {
-      const name = p.metadata?.name || 'unknown';
-      const ns = p.metadata?.namespace || 'default';
-      const phase = p.status?.phase || 'Unknown';
-      const podIP = p.status?.podIP || '-';
-      const containers = p.status?.containerStatuses || [];
-      const ready = containers.filter((c: any) => c.ready).length + '/' + (containers.length || 0);
-      const restarts = containers.reduce((s: number, c: any) => s + (c.restartCount || 0), 0);
-      const age = (() => {
-        const t = p.metadata?.creationTimestamp && Date.parse(p.metadata.creationTimestamp);
-        if (!t) return '-';
-        const s = Math.floor((Date.now() - t) / 1000);
-        if (s < 60) return s + 's';
-        if (s < 3600) return Math.floor(s/60) + 'm';
-        return Math.floor(s/3600) + 'h';
-      })();
-
-      return `
-        <div class="card">
-          <div class="title">${name}</div>
-          <div class="meta">NS: ${ns} · IP: ${podIP} · Age: ${age}</div>
-          <div class="status ${phase.toLowerCase()}">Status: ${phase}</div>
-          <div class="meta">Ready: ${ready} · Restarts: ${restarts}</div>
-        </div>
-      `;
+      const podInfo = parsePodInfo(p);
+      return generatePodCardHtml(podInfo);
     }).join('\n');
 
-    const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Pods</title>
-  <style>
-    body{margin:16px;font-family:monospace;background:#071018;color:#e6eef3}
-    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
-    .card{background:rgba(255,255,255,0.03);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.02)}
-    .title{font-weight:700;margin-bottom:6px}
-    .meta{font-size:13px;color:#9aa6b2;margin-bottom:6px}
-    .status{padding:6px;border-radius:6px;font-weight:600}
-    .status.running{background:rgba(110,231,183,0.06);color:#6ee7b7}
-    .status.pending{background:rgba(245,158,11,0.06);color:#f59e0b}
-    .status.failed{background:rgba(239,68,68,0.06);color:#f87171}
-  </style>
-</head>
-<body>
-  <h1>Pods (from kubectl)</h1>
-  <p style="color:#9aa6b2">This page uses the server's <code>kubectl</code> command — ensure your kubeconfig is accessible.</p>
-  <div class="grid">${cards}</div>
-  <p style="margin-top:12px;color:#9aa6b2"><a href="/" style="color:#6ee7b7">Back</a></p>
-</body>
-</html>`;
-
-    res.send(html);
+    res.send(generatePodsPageHtml(cards));
   } catch (err: any) {
     const message = String(err.message || err);
-    res.send(`<!doctype html><html><body><h1>Pods</h1><p>kubectl failed: ${message}</p><p>Make sure kubectl is installed and kubeconfig is accessible to the server process.</p><p><a href="/">Back</a></p></body></html>`);
+    res.send(generatePodsErrorHtml(message));
   }
 });
 
