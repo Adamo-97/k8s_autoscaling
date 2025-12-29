@@ -95,6 +95,32 @@ export async function getServiceClusterIP(): Promise<string | null> {
 }
 
 /**
+ * Check if a given IP belongs to the current pod
+ * Used to detect single-pod scenario for local stress testing
+ */
+export async function isCurrentPodIP(ip: string): Promise<boolean> {
+  // Check env var first (fastest)
+  if (process.env.POD_IP === ip) return true;
+  
+  try {
+    // Query current pod's IP from K8s API
+    const kc = createKubeConfig();
+    const k8sApi = kc.makeApiClient(CoreV1Api);
+    const podName = CONFIG.POD_NAME;
+    
+    if (podName && !podName.startsWith('local') && !podName.includes('unknown')) {
+      const podResp = await k8sApi.readNamespacedPod(podName, 'default');
+      const currentPodIP = podResp.body.status?.podIP;
+      return currentPodIP === ip;
+    }
+  } catch {
+    // Ignore - fallback to false
+  }
+  
+  return false;
+}
+
+/**
  * Fetch cluster status including pods and HPA data
  * 
  * @returns Object containing pods array and HPA status

@@ -10,6 +10,7 @@ import {
   parseHPAStatusV2,
   parseKubectlPods,
   extractPodIPs,
+  isPodReady,
   buildTargetUrl,
   distributeTarget,
   calculateScalingPercentage,
@@ -355,18 +356,84 @@ describe('Kubernetes Utility Functions', () => {
     });
   });
 
+  describe('isPodReady', () => {
+    test('returns true for Running pod with Ready condition', () => {
+      const pod = {
+        metadata: {},
+        status: {
+          phase: 'Running',
+          conditions: [{ type: 'Ready', status: 'True' }]
+        }
+      };
+      expect(isPodReady(pod)).toBe(true);
+    });
+
+    test('returns false for Pending pod', () => {
+      const pod = {
+        status: { phase: 'Pending' }
+      };
+      expect(isPodReady(pod)).toBe(false);
+    });
+
+    test('returns false for pod with deletionTimestamp (terminating)', () => {
+      const pod = {
+        metadata: { deletionTimestamp: '2025-01-01T00:00:00Z' },
+        status: {
+          phase: 'Running',
+          conditions: [{ type: 'Ready', status: 'True' }]
+        }
+      };
+      expect(isPodReady(pod)).toBe(false);
+    });
+
+    test('returns false for pod with Ready=False', () => {
+      const pod = {
+        metadata: {},
+        status: {
+          phase: 'Running',
+          conditions: [{ type: 'Ready', status: 'False' }]
+        }
+      };
+      expect(isPodReady(pod)).toBe(false);
+    });
+
+    test('returns false for null/undefined', () => {
+      expect(isPodReady(null)).toBe(false);
+      expect(isPodReady(undefined)).toBe(false);
+    });
+  });
+
   describe('extractPodIPs', () => {
-    test('extracts IPs from pods', () => {
+    test('extracts IPs from ready pods only', () => {
       const pods = [
-        { status: { podIP: '10.0.0.1' } },
-        { status: { podIP: '10.0.0.2' } },
-        { status: {} }
+        { 
+          metadata: {},
+          status: { 
+            phase: 'Running', 
+            podIP: '10.0.0.1',
+            conditions: [{ type: 'Ready', status: 'True' }]
+          } 
+        },
+        { 
+          metadata: {},
+          status: { 
+            phase: 'Running', 
+            podIP: '10.0.0.2',
+            conditions: [{ type: 'Ready', status: 'True' }]
+          } 
+        },
+        { status: { phase: 'Pending', podIP: '10.0.0.3' } }, // Not ready
+        { metadata: { deletionTimestamp: '2025-01-01' }, status: { phase: 'Running', podIP: '10.0.0.4' } } // Terminating
       ];
       expect(extractPodIPs(pods)).toEqual(['10.0.0.1', '10.0.0.2']);
     });
 
-    test('returns empty array for no IPs', () => {
-      expect(extractPodIPs([{}, {}])).toEqual([]);
+    test('returns empty array for no ready pods', () => {
+      const pods = [
+        { status: { phase: 'Pending' } },
+        { status: { phase: 'Failed' } }
+      ];
+      expect(extractPodIPs(pods)).toEqual([]);
     });
 
     test('handles empty array', () => {

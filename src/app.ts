@@ -100,10 +100,55 @@ async function generateLoadHandler(req: Request, res: Response): Promise<void> {
   const targets = podIps.length ? podIps : ['127.0.0.1'];
   log.stress('Load distribution', `Targets: ${targets.length}, Concurrency: ${CONCURRENCY}, Rounds: ${ROUNDS}`);
   
-  // Run load test in background
-  runDistributedLoadTest(targets, CONCURRENCY, ROUNDS);
+  // Check if we're the only pod - run local stress instead of HTTP requests
+  const isSinglePod = targets.length === 1 && (
+    targets[0] === '127.0.0.1' || 
+    targets[0] === process.env.POD_IP ||
+    await k8sService.isCurrentPodIP(targets[0])
+  );
+  
+  if (isSinglePod) {
+    log.stress('Single pod mode', 'Running local CPU stress (no HTTP overhead)');
+    runLocalStressTest(ROUNDS);
+  } else {
+    // Distributed load across multiple pods
+    runDistributedLoadTest(targets, CONCURRENCY, ROUNDS);
+  }
   
   res.status(202).json(createGenerateLoadResponse(targets, CONCURRENCY, ROUNDS));
+}
+
+/**
+ * Run local stress test when we're the only pod
+ * This avoids HTTP overhead and timeouts from self-requests
+ */
+async function runLocalStressTest(rounds: number): Promise<void> {
+  log.stress('Local stress starting', `${rounds} rounds of CPU work`);
+  
+  try {
+    for (let round = 0; round < rounds; round++) {
+      if (stressService.getStopStress()) {
+        log.stress('Stopped early', `Completed ${round}/${rounds} rounds`);
+        break;
+      }
+      
+      log.info(`Local round ${round + 1}/${rounds} - CPU stress`);
+      
+      // Run CPU-intensive work directly
+      const result = await stressService.executeCpuWork();
+      log.debug(`Local round ${round + 1} complete: ${result.elapsed}ms, stopped=${result.wasStopped}`);
+      
+      if (result.wasStopped) break;
+      
+      // Brief yield between rounds
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  } catch (err) {
+    log.error(`Local stress test failed: ${err}`);
+  } finally {
+    stressService.endStressTest();
+    log.stress('Local stress complete');
+  }
 }
 
 /**
