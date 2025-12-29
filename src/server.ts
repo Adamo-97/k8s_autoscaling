@@ -253,11 +253,15 @@ app.get('/', (req: Request, res: Response) => {
           
           // Animate progress bar over 60 seconds
           let progress = 0;
-          const interval = setInterval(() => {
+          window.stressInterval = setInterval(() => {
             progress += 100 / 60; // Increment every second for 60 seconds
             if (progress >= 100) {
               progress = 100;
-              clearInterval(interval);
+              clearInterval(window.stressInterval);
+              // CRITICAL: Call /stop-load to ensure all pods stop their CPU work
+              fetch('/stop-load', { method: 'POST' }).then(() => {
+                log('Stop signal sent to all pods');
+              }).catch(() => {});
               // Re-enable button after load completes
               setTimeout(() => {
                 document.getElementById('start-stress').disabled = false;
@@ -277,6 +281,11 @@ app.get('/', (req: Request, res: Response) => {
     };
 
     document.getElementById('stop-stress').onclick = () => {
+      // Clear the progress interval if it's running
+      if (window.stressInterval) {
+        clearInterval(window.stressInterval);
+        window.stressInterval = null;
+      }
       // Call server to stop the stress test
       fetch('/stop-load', { method: 'POST' }).then(() => {
         document.getElementById('start-stress').disabled = false;
@@ -464,21 +473,51 @@ app.post('/stop-load', async (req: Request, res: Response) => {
   stopStress = true;
   activeStressTest = false;
   
-  // Also propagate stop to all other pods
-  try {
-    const kc = new KubeConfig();
-    try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
-    const k8sApi = kc.makeApiClient(CoreV1Api);
-    const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
-    const podIps = extractPodIPs(podsResp.body.items || []);
-    
-    // Send stop signal to all pods
+  // Helper to get current pod IPs (re-query to catch newly scaled pods)
+  const getPodIPs = async (): Promise<string[]> => {
+    try {
+      const kc = new KubeConfig();
+      try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); }
+      const k8sApi = kc.makeApiClient(CoreV1Api);
+      const podsResp = await k8sApi.listNamespacedPod('default', undefined, undefined, undefined, undefined, 'app=k8s-autoscaling');
+      return extractPodIPs(podsResp.body.items || []);
+    } catch {
+      return [];
+    }
+  };
+  
+  // Send stop signal to all pods multiple times to ensure delivery
+  // This handles newly scaled pods that may not have received initial signal
+  const sendStopToAll = async (podIps: string[]) => {
     const stopPromises = podIps.map(ip => 
-      (fetch as any)(`http://${ip}:3000/internal-stop`, { method: 'POST' }).catch(() => null)
+      (fetch as any)(`http://${ip}:3000/internal-stop`, { method: 'POST', signal: AbortSignal.timeout(2000) }).catch(() => null)
     );
     await Promise.allSettled(stopPromises);
+  };
+  
+  try {
+    // First wave: stop all current pods
+    const podIps = await getPodIPs();
+    await sendStopToAll(podIps);
+    
+    // Second wave after short delay (catch any pods that just came up)
+    setTimeout(async () => {
+      const newPodIps = await getPodIPs();
+      await sendStopToAll(newPodIps);
+    }, 1000);
+    
+    // Third wave for extra safety, then reset the stop flag
+    setTimeout(async () => {
+      const finalPodIps = await getPodIPs();
+      await sendStopToAll(finalPodIps);
+      // Reset stopStress flag after all pods have been signaled
+      // This allows new stress tests to start fresh
+      stopStress = false;
+    }, 2000);
   } catch (err) {
-    // Fallback: stop locally only
+    // Fallback: stop locally only (already done above)
+    // Still reset flag after delay
+    setTimeout(() => { stopStress = false; }, 2000);
   }
   
   res.json(createStopResponse());
@@ -488,6 +527,8 @@ app.post('/stop-load', async (req: Request, res: Response) => {
 app.post('/internal-stop', (req: Request, res: Response) => {
   stopStress = true;
   activeStressTest = false;
+  // Reset after delay to allow new stress tests
+  setTimeout(() => { stopStress = false; }, 2000);
   res.json(createInternalStopResponse());
 });
 
@@ -555,8 +596,11 @@ app.post('/generate-load', async (req: Request, res: Response) => {
     }
     
     // Auto-cleanup after stress test completes
+    // IMPORTANT: Do NOT reset stopStress here - let /stop-load handle it
+    // This prevents race conditions where ongoing /cpu-load calls continue
     activeStressTest = false;
-    stopStress = false;
+    // Signal stop to ensure any stragglers finish quickly
+    stopStress = true;
   })();
 
   res.status(202).json(createGenerateLoadResponse(podIps.length || ['service'], concurrency, rounds));
@@ -569,12 +613,18 @@ app.get('/cpu-load', async (req: Request, res: Response) => {
   let result = 0;
   
   // Perform intensive CPU work for about 10 seconds (enough to trigger HPA)
-  // BUT check stop flag and abort early if needed
+  // Check stop flag frequently to allow quick abort
   const duration = 10000;
-  while (Date.now() - start < duration && !stopStress) {
-    for (let i = 0; i < 1000000; i++) {  // Increased iterations for more CPU usage
-      result += Math.sqrt(i) * Math.sin(i) * Math.cos(i) * Math.tan(i % 100 + 1);
+  const checkInterval = 100000; // Check stop flag every 100k iterations (~50ms)
+  let iterCount = 0;
+  
+  while (Date.now() - start < duration) {
+    // Check stop flag periodically
+    if (iterCount % checkInterval === 0 && stopStress) {
+      break;
     }
+    result += Math.sqrt(iterCount) * Math.sin(iterCount) * Math.cos(iterCount) * Math.tan(iterCount % 100 + 1);
+    iterCount++;
   }
   
   const elapsed = Date.now() - start;
