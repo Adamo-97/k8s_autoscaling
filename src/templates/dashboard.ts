@@ -377,27 +377,36 @@ export function generateDashboardHtml(podName: string): string {
     function connectPhasedStatus() {
       if (phasedES) phasedES.close();
       phasedES = new EventSource('/phased-test-status');
+      
       phasedES.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
           
-          if (data.phase && data.phase !== 'idle') {
+          if (data.phase && data.phase !== 'idle' && data.phase !== 'complete') {
             updatePhaseIndicator(data.phase, data.intensity || 0, data.phaseProgress || 0);
-            
-            if (data.iteration > 0) {
-              document.getElementById('suite-iteration').textContent = data.iteration + '/' + data.totalIterations;
-              document.getElementById('suite-bar').style.width = ((data.iteration - 1) / data.totalIterations * 100) + '%';
-            }
           }
           
-          if (!data.running && data.phase === 'complete') {
-            logEvent('phase', 'Phased test COMPLETE');
-            resetPhasedUI();
-            if (data.totalIterations > 1) {
-              fetchResults();
-            }
+          // Update iteration counter
+          if (data.iteration > 0 && data.totalIterations > 0) {
+            document.getElementById('suite-iteration').textContent = data.completedIterations + '/' + data.totalIterations;
+            const progress = (data.completedIterations / data.totalIterations) * 100;
+            document.getElementById('suite-bar').style.width = progress + '%';
           }
-        } catch(e) { console.error(e); }
+          
+          // Only reset UI when test suite is completely done (not running and all iterations complete)
+          if (!data.running && data.completedIterations > 0 && data.completedIterations >= data.totalIterations) {
+            logEvent('phase', 'Test suite COMPLETE - ' + data.completedIterations + ' iterations');
+            document.getElementById('suite-status').textContent = 'Complete';
+            document.getElementById('view-results').disabled = false;
+            resetPhasedUI();
+            fetchResults();
+          }
+        } catch(e) { console.error('Phased status parse error:', e); }
+      };
+      
+      phasedES.onerror = () => {
+        logEvent('error', 'Phased test SSE disconnected, reconnecting...');
+        setTimeout(connectPhasedStatus, 2000);
       };
     }
 

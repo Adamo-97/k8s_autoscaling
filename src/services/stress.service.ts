@@ -301,6 +301,9 @@ export async function executeStreamingCpuWork(
  * Execute CPU work at a specific intensity level (0-100%)
  * Intensity controls the ratio of work time to idle time
  * 
+ * IMPORTANT: This function yields frequently to prevent blocking the event loop,
+ * which would break SSE connections and cause ERR_INCOMPLETE_CHUNKED_ENCODING errors.
+ * 
  * @param durationMs - How long to run at this intensity
  * @param intensity - Load intensity from 0 to 100
  */
@@ -322,32 +325,41 @@ export async function executeCpuWorkAtIntensity(
     return { elapsed: Date.now() - start, wasStopped: stopStress };
   }
   
-  // Scale iterations based on intensity to actually generate CPU load
-  const baseIterations = CONFIG.STRESS.ITERATIONS_PER_CHUNK;
-  const scaledIterations = Math.max(1, Math.floor(baseIterations * normalizedIntensity));
-  const chunkDuration = CONFIG.STRESS.CHUNK_DURATION_MS;
+  // Use shorter work chunks (50ms max) to prevent blocking SSE
+  const workChunkMs = 50;
+  // Scale iterations to generate appropriate CPU load
+  const baseIterations = Math.floor(CONFIG.STRESS.ITERATIONS_PER_CHUNK / 4);
+  const scaledIterations = Math.max(100, Math.floor(baseIterations * normalizedIntensity));
   
-  let result = 0; // Prevent optimization
+  let result = 0; // Accumulator prevents optimization
   
   while (Date.now() - start < durationMs) {
     if (stopStress) {
       return { elapsed: Date.now() - start, wasStopped: true };
     }
     
-    // CPU-intensive work proportional to intensity
+    // Work phase - proportional to intensity
+    const workTime = workChunkMs * normalizedIntensity;
     const chunkStart = Date.now();
     
-    // Tight loop that can't be optimized away
-    while (Date.now() - chunkStart < chunkDuration * normalizedIntensity) {
+    while (Date.now() - chunkStart < workTime) {
       for (let i = 0; i < scaledIterations; i++) {
         const x = Math.sqrt(i + result + 1);
         const y = Math.sin(x) * Math.cos(x);
         result += y * Math.tan((i % 89) + 1);
       }
+      // Micro-yield inside tight loop to check time
+      if (stopStress) break;
     }
     
-    // Small yield to prevent process blocking
-    await new Promise(resolve => setImmediate(resolve));
+    // Idle phase - inversely proportional to intensity (allows SSE to work)
+    const idleTime = workChunkMs * (1 - normalizedIntensity);
+    if (idleTime > 5) {
+      await new Promise(resolve => setTimeout(resolve, idleTime));
+    } else {
+      // At high intensity, still yield briefly to prevent blocking SSE
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
   }
   
   return { elapsed: Date.now() - start, wasStopped: false };

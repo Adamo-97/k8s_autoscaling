@@ -555,16 +555,21 @@ async function runTestSuite(iterations: number): Promise<void> {
   const targets = podIps.length ? podIps : ['127.0.0.1'];
   
   for (let i = 1; i <= iterations; i++) {
+    // Reset stop flag at the start of each iteration to ensure it continues
+    // Only check for explicit stop requests, not state from previous iteration
     if (stressService.getStopStress()) {
-      log.stress('Test suite stopped', `Completed ${i - 1}/${iterations} iterations`);
-      break;
+      // Check if this was an explicit stop request (user clicked stop)
+      if (i > 1) {
+        log.stress('Test suite stopped by user', `Completed ${i - 1}/${iterations} iterations`);
+        break;
+      }
+      // For first iteration, reset and continue
+      log.stress('Resetting stop flag for first iteration', '');
     }
-    
-    // Reset stop flag for each iteration (in case previous iteration set it)
     stressService.setStopStress(false);
     
     log.stress(`ITERATION ${i}/${iterations}`, 'Starting phased test');
-    stressService.setPhasedTestState({ iteration: i, totalIterations: iterations });
+    stressService.setPhasedTestState({ iteration: i, totalIterations: iterations, phase: 'idle' });
     
     const iterationStart = Date.now();
     const scalingMetrics: ScalingMetrics = {
@@ -633,10 +638,17 @@ async function runTestSuite(iterations: number): Promise<void> {
       }
     };
     
-    const result = await stressService.executePhasedLoadTest(
-      sendLoad,
-      () => {} // Phase changes logged elsewhere
-    );
+    let result;
+    try {
+      result = await stressService.executePhasedLoadTest(
+        sendLoad,
+        () => {} // Phase changes logged elsewhere
+      );
+    } catch (err) {
+      log.error(`Iteration ${i} phased test failed: ${err}`);
+      clearInterval(metricsInterval);
+      continue; // Skip to next iteration instead of breaking
+    }
     
     clearInterval(metricsInterval);
     
