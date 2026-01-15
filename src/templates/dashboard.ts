@@ -406,7 +406,9 @@ export function generateDashboardHtml(podName: string): string {
       
       phasedES.onerror = () => {
         logEvent('error', 'Phased test SSE disconnected, reconnecting...');
-        setTimeout(connectPhasedStatus, 2000);
+        // Fetch results immediately on disconnect to update UI
+        fetchResults();
+        setTimeout(connectPhasedStatus, 3000);
       };
     }
 
@@ -439,7 +441,7 @@ export function generateDashboardHtml(podName: string): string {
       document.getElementById('start-phased').disabled = true;
       document.getElementById('start-suite').disabled = true;
       document.getElementById('suite-status').textContent = 'Running';
-      document.getElementById('view-results').disabled = true;
+      document.getElementById('view-results').disabled = false; // Keep enabled to view partial results
       logEvent('iteration', 'Starting 10-ITERATION test suite');
       
       fetch('/run-test-suite', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iterations: 10}) })
@@ -499,6 +501,26 @@ export function generateDashboardHtml(podName: string): string {
     }
 
     document.getElementById('view-results').onclick = fetchResults;
+
+    // Auto-refresh results every 10 seconds when test suite is running
+    setInterval(() => {
+      const status = document.getElementById('suite-status').textContent;
+      if (status === 'Running') {
+        fetch('/test-suite-status').then(r => r.json()).then(data => {
+          if (data.completedIterations > 0) {
+            document.getElementById('suite-iteration').textContent = data.completedIterations + '/' + data.totalIterations;
+            const progress = (data.completedIterations / data.totalIterations) * 100;
+            document.getElementById('suite-bar').style.width = progress + '%';
+            // Fetch partial results
+            fetchResults();
+          }
+          if (!data.running && data.completedIterations >= data.totalIterations) {
+            document.getElementById('suite-status').textContent = 'Complete';
+            resetPhasedUI();
+          }
+        }).catch(() => {});
+      }
+    }, 10000);
 
     logEvent('info', 'Dashboard initialized - connected to cluster');
   </script>

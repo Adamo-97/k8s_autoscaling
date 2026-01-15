@@ -342,21 +342,33 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Keep-Alive', 'timeout=120');
   res.flushHeaders();
   
   // Send initial comment to establish connection
   res.write(':ok\n\n');
   
   let isConnected = true;
+  let writeErrors = 0;
+  const MAX_WRITE_ERRORS = 3;
   
-  const send = (data: object) => {
-    if (isConnected && !res.writableEnded) {
-      try {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-      } catch (e) {
+  const safeWrite = (data: string): boolean => {
+    if (!isConnected || res.writableEnded) return false;
+    try {
+      res.write(data);
+      writeErrors = 0; // Reset on successful write
+      return true;
+    } catch {
+      writeErrors++;
+      if (writeErrors >= MAX_WRITE_ERRORS) {
         isConnected = false;
       }
+      return false;
     }
+  };
+  
+  const send = (data: object) => {
+    safeWrite(`data: ${JSON.stringify(data)}\n\n`);
   };
   
   const fetchAndSend = async () => {
@@ -374,16 +386,14 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
   // Initial fetch
   await fetchAndSend();
   
-  // Periodic updates
-  const intervalId = setInterval(fetchAndSend, CONFIG.TIMEOUTS.SSE_INTERVAL_MS);
+  // Periodic updates - slower interval (3s) to reduce CPU impact
+  const intervalId = setInterval(fetchAndSend, 3000);
   activeSSEIntervals.add(intervalId);
   
-  // Send keepalive every 15 seconds to prevent timeout
+  // Send keepalive every 10 seconds to prevent timeout
   const keepaliveId = setInterval(() => {
-    if (isConnected && !res.writableEnded) {
-      res.write(':keepalive\n\n');
-    }
-  }, 15000);
+    safeWrite(':keepalive\n\n');
+  }, 10000);
   activeSSEIntervals.add(keepaliveId);
   
   // Cleanup on disconnect
@@ -399,6 +409,8 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
     isConnected = false;
     clearInterval(intervalId);
     clearInterval(keepaliveId);
+    activeSSEIntervals.delete(intervalId);
+    activeSSEIntervals.delete(keepaliveId);
   });
 }
 
@@ -738,11 +750,29 @@ async function phasedTestStatusHandler(req: Request, res: Response): Promise<voi
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Keep-Alive', 'timeout=120');
   res.flushHeaders();
   
   res.write(':ok\n\n');
   
   let isConnected = true;
+  let writeErrors = 0;
+  const MAX_WRITE_ERRORS = 3;
+  
+  const safeWrite = (data: string): boolean => {
+    if (!isConnected || res.writableEnded) return false;
+    try {
+      res.write(data);
+      writeErrors = 0; // Reset on successful write
+      return true;
+    } catch {
+      writeErrors++;
+      if (writeErrors >= MAX_WRITE_ERRORS) {
+        isConnected = false;
+      }
+      return false;
+    }
+  };
   
   const send = () => {
     if (!isConnected || res.writableEnded) return;
@@ -751,26 +781,30 @@ async function phasedTestStatusHandler(req: Request, res: Response): Promise<voi
     const isRunning = stressService.getActiveStressTest();
     const results = stressService.getTestSuiteResults();
     
-    try {
-      res.write(`data: ${JSON.stringify({
-        running: isRunning,
-        ...state,
-        completedIterations: results.length,
-        latestResult: results.length > 0 ? results[results.length - 1] : null
-      })}\n\n`);
-    } catch {
-      isConnected = false;
-    }
+    safeWrite(`data: ${JSON.stringify({
+      running: isRunning,
+      ...state,
+      completedIterations: results.length,
+      latestResult: results.length > 0 ? results[results.length - 1] : null
+    })}\n\n`);
   };
   
+  // Send heartbeat comments every 5s to keep connection alive
+  const heartbeatId = setInterval(() => {
+    safeWrite(':heartbeat\n\n');
+  }, 5000);
+  activeSSEIntervals.add(heartbeatId);
+  
   send();
-  const intervalId = setInterval(send, 1000);
+  const intervalId = setInterval(send, 2000); // Slower updates to reduce load
   activeSSEIntervals.add(intervalId);
   
   req.on('close', () => {
     isConnected = false;
     clearInterval(intervalId);
+    clearInterval(heartbeatId);
     activeSSEIntervals.delete(intervalId);
+    activeSSEIntervals.delete(heartbeatId);
   });
 }
 
