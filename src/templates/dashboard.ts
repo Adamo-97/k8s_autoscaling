@@ -393,13 +393,18 @@ export function generateDashboardHtml(podName: string): string {
             document.getElementById('suite-bar').style.width = progress + '%';
           }
           
+          // Update results from SSE-delivered aggregates (avoids load balancer routing issues)
+          if (data.aggregates && data.aggregates.completed > 0) {
+            updateResultsFromAggregates(data.aggregates);
+          }
+          
           // Only reset UI when test suite is completely done (not running and all iterations complete)
           if (!data.running && data.completedIterations > 0 && data.completedIterations >= data.totalIterations) {
             logEvent('phase', 'Test suite COMPLETE - ' + data.completedIterations + ' iterations');
             document.getElementById('suite-status').textContent = 'Complete';
             document.getElementById('view-results').disabled = false;
             resetPhasedUI();
-            fetchResults();
+            if (data.aggregates) updateResultsFromAggregates(data.aggregates);
           }
         } catch(e) { console.error('Phased status parse error:', e); }
       };
@@ -472,29 +477,27 @@ export function generateDashboardHtml(podName: string): string {
         });
     };
 
+    // Update results UI directly from SSE-delivered aggregates (avoids load balancer issues)
+    function updateResultsFromAggregates(results) {
+      document.getElementById('results-section').style.display = 'block';
+      document.getElementById('result-iterations').textContent = results.completed + '/' + (results.iterations || '?');
+      
+      if (results.completed > 0) {
+        document.getElementById('result-avg-scaleup').textContent = results.avgScaleUpTimeMs ? (results.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+        document.getElementById('result-avg-scaledown').textContent = results.avgScaleDownTimeMs ? (results.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+        document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) : 'N/A';
+        document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu ? results.avgPeakCpu.toFixed(0) + '%' : 'N/A';
+        document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+        document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+        logEvent('info', 'Results updated: ' + results.completed + '/' + results.iterations + ' iterations (via SSE)');
+      }
+    }
+
     function fetchResults() {
       logEvent('info', 'Fetching test suite results...');
       fetch('/test-suite-results').then(r => r.json()).then(results => {
         logEvent('info', 'Results received: ' + results.completed + '/' + results.iterations + ' iterations');
-        
-        document.getElementById('results-section').style.display = 'block';
-        document.getElementById('result-iterations').textContent = results.completed + '/' + (results.iterations || '?');
-        
-        if (results.completed > 0) {
-          document.getElementById('result-avg-scaleup').textContent = results.avgScaleUpTimeMs ? (results.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-          document.getElementById('result-avg-scaledown').textContent = results.avgScaleDownTimeMs ? (results.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-          document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) : 'N/A';
-          document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu ? results.avgPeakCpu.toFixed(0) + '%' : 'N/A';
-          document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-          document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-        } else {
-          document.getElementById('result-avg-scaleup').textContent = 'No data';
-          document.getElementById('result-avg-scaledown').textContent = 'No data';
-          document.getElementById('result-peak-replicas').textContent = 'No data';
-          document.getElementById('result-peak-cpu').textContent = 'No data';
-          document.getElementById('result-min-scaleup').textContent = 'No data';
-          document.getElementById('result-max-scaleup').textContent = 'No data';
-        }
+        updateResultsFromAggregates(results);
       }).catch(e => {
         logEvent('error', 'Failed to fetch results: ' + e.message);
       });

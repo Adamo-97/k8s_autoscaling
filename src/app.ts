@@ -780,12 +780,14 @@ async function phasedTestStatusHandler(req: Request, res: Response): Promise<voi
     const state = stressService.getPhasedTestState();
     const isRunning = stressService.getActiveStressTest();
     const results = stressService.getTestSuiteResults();
+    const aggregates = stressService.calculateTestSuiteAggregates();
     
     safeWrite(`data: ${JSON.stringify({
       running: isRunning,
       ...state,
       completedIterations: results.length,
-      latestResult: results.length > 0 ? results[results.length - 1] : null
+      latestResult: results.length > 0 ? results[results.length - 1] : null,
+      aggregates: aggregates
     })}\n\n`);
   };
   
