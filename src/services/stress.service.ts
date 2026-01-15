@@ -367,18 +367,27 @@ export async function executeCpuWorkAtIntensity(
 
 /**
  * Sleep utility that respects stop flag
+ * Returns true if stopped early, false if sleep completed normally
  */
 export async function sleepWithStopCheck(ms: number): Promise<boolean> {
   const start = Date.now();
   const checkInterval = 500; // Check every 500ms
   
   while (Date.now() - start < ms) {
-    if (stopStress) return true; // Was stopped
+    if (stopStress) {
+      log.debug(`sleepWithStopCheck: stopped early after ${Date.now() - start}ms`);
+      return true; // Was stopped early
+    }
     const remaining = ms - (Date.now() - start);
     await new Promise(resolve => setTimeout(resolve, Math.min(checkInterval, remaining)));
   }
   
-  return stopStress;
+  // Sleep completed normally - check one final time but don't report as stopped
+  // unless stop was explicitly requested
+  if (stopStress) {
+    log.debug(`sleepWithStopCheck: stop flag set at end of sleep`);
+  }
+  return false; // Sleep completed normally
 }
 
 /**
@@ -416,10 +425,13 @@ export async function executePhasedLoadTest(
   onPhaseChange('warm-up', 0, 0);
   
   const warmUpStart = Date.now();
+  log.debug(`Warm-up starting, stopStress=${stopStress}`);
   const wasStoppedWarmUp = await sleepWithStopCheck(WARM_UP_MS);
   phaseResults.warmUp.durationMs = Date.now() - warmUpStart;
+  log.debug(`Warm-up complete: wasStoppedWarmUp=${wasStoppedWarmUp}, stopStress=${stopStress}`);
   
   if (wasStoppedWarmUp) {
+    log.stress('WARM-UP', 'Stopped early');
     return { phases: phaseResults, wasStopped: true };
   }
   
@@ -430,6 +442,7 @@ export async function executePhasedLoadTest(
   const rampUpStart = Date.now();
   for (let step = 1; step <= INTENSITY_STEPS; step++) {
     if (stopStress) {
+      log.stress('RAMP-UP', `Stopped at step ${step}/${INTENSITY_STEPS}`);
       phaseResults.rampUp.durationMs = Date.now() - rampUpStart;
       return { phases: phaseResults, wasStopped: true };
     }

@@ -471,17 +471,27 @@ export function generateDashboardHtml(podName: string): string {
     };
 
     function fetchResults() {
+      logEvent('info', 'Fetching test suite results...');
       fetch('/test-suite-results').then(r => r.json()).then(results => {
+        logEvent('info', 'Results received: ' + results.completed + '/' + results.iterations + ' iterations');
+        
+        document.getElementById('results-section').style.display = 'block';
+        document.getElementById('result-iterations').textContent = results.completed + '/' + (results.iterations || '?');
+        
         if (results.completed > 0) {
-          document.getElementById('results-section').style.display = 'block';
-          document.getElementById('result-iterations').textContent = results.completed + '/' + results.iterations;
           document.getElementById('result-avg-scaleup').textContent = results.avgScaleUpTimeMs ? (results.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
           document.getElementById('result-avg-scaledown').textContent = results.avgScaleDownTimeMs ? (results.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-          document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas.toFixed(1);
-          document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu.toFixed(0) + '%';
+          document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) : 'N/A';
+          document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu ? results.avgPeakCpu.toFixed(0) + '%' : 'N/A';
           document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
           document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-          logEvent('info', 'Test results loaded: ' + results.completed + ' iterations completed');
+        } else {
+          document.getElementById('result-avg-scaleup').textContent = 'No data';
+          document.getElementById('result-avg-scaledown').textContent = 'No data';
+          document.getElementById('result-peak-replicas').textContent = 'No data';
+          document.getElementById('result-peak-cpu').textContent = 'No data';
+          document.getElementById('result-min-scaleup').textContent = 'No data';
+          document.getElementById('result-max-scaleup').textContent = 'No data';
         }
       }).catch(e => {
         logEvent('error', 'Failed to fetch results: ' + e.message);

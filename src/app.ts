@@ -640,19 +640,32 @@ async function runTestSuite(iterations: number): Promise<void> {
     
     let result;
     try {
+      log.stress(`Iteration ${i}`, `Executing phased load test on ${targets.length} targets`);
       result = await stressService.executePhasedLoadTest(
         sendLoad,
-        () => {} // Phase changes logged elsewhere
+        (phase, intensity, progress) => {
+          log.debug(`Phase: ${phase}, Intensity: ${intensity}%, Progress: ${progress}%`);
+        }
       );
+      log.stress(`Iteration ${i}`, `Phased test returned: wasStopped=${result.wasStopped}`);
     } catch (err) {
       log.error(`Iteration ${i} phased test failed: ${err}`);
       clearInterval(metricsInterval);
+      activeSSEIntervals.delete(metricsInterval);
       continue; // Skip to next iteration instead of breaking
     }
     
     clearInterval(metricsInterval);
+    activeSSEIntervals.delete(metricsInterval);
+    
+    // Skip recording if test was stopped
+    if (result.wasStopped) {
+      log.stress(`Iteration ${i}`, 'Skipped - test was stopped');
+      continue;
+    }
     
     // Record iteration result
+    log.stress(`Iteration ${i}`, 'Recording results...');
     const iterationResult: stressService.TestIterationResult = {
       iteration: i,
       scaleUpTimeMs: scalingMetrics.scaleUpDetectedAt,
