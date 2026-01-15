@@ -544,12 +544,20 @@ async function testSuiteHandler(req: Request, res: Response): Promise<void> {
     stressService.endStressTest();
   });
   
+  // Calculate estimated duration including cooldowns and breathing room
+  const phaseDuration = CONFIG.PHASED_TEST.WARM_UP_MS + CONFIG.PHASED_TEST.RAMP_UP_MS + 
+                        CONFIG.PHASED_TEST.STEADY_MS + CONFIG.PHASED_TEST.RAMP_DOWN_MS;
+  const breathingRoom = (CONFIG.PHASED_TEST.INTENSITY_STEPS * 2000) + // 2s between ramp-up steps
+                        (Math.ceil(CONFIG.PHASED_TEST.STEADY_MS / (CONFIG.PHASED_TEST.RAMP_UP_MS / CONFIG.PHASED_TEST.INTENSITY_STEPS)) * 1000); // 1s between steady chunks
+  const cooldownMs = CONFIG.TEST_SUITE.COOLDOWN_BETWEEN_RUNS ? 
+                     ((CONFIG.TEST_SUITE as { COOLDOWN_MS?: number }).COOLDOWN_MS || 120000) : 0;
+  const totalMs = iterations * (phaseDuration + breathingRoom) + (iterations - 1) * cooldownMs;
+  
   res.status(202).json({
     status: 'started',
     message: `Test suite started with ${iterations} iterations`,
     iterations,
-    estimatedDuration: `${(iterations * (CONFIG.PHASED_TEST.WARM_UP_MS + CONFIG.PHASED_TEST.RAMP_UP_MS + 
-                         CONFIG.PHASED_TEST.STEADY_MS + CONFIG.PHASED_TEST.RAMP_DOWN_MS)) / 60000} minutes`,
+    estimatedDuration: `${Math.round(totalMs / 60000)} minutes`,
     statusEndpoint: '/test-suite-status',
     resultsEndpoint: '/test-suite-results'
   });
@@ -696,8 +704,50 @@ async function runTestSuite(iterations: number): Promise<void> {
     log.stress(`Iteration ${i} complete`, 
       `Peak: ${scalingMetrics.peakReplicas} replicas, CPU: ${scalingMetrics.peakCpu}%`);
     
-    // NO cooldown between runs (per requirements)
-    if (!CONFIG.TEST_SUITE.COOLDOWN_BETWEEN_RUNS) {
+    // Cooldown phase - wait for HPA to scale down so we can measure it
+    if (CONFIG.TEST_SUITE.COOLDOWN_BETWEEN_RUNS && i < iterations) {
+      const cooldownMs = (CONFIG.TEST_SUITE as { COOLDOWN_MS?: number }).COOLDOWN_MS || 120000;
+      log.stress('COOLDOWN', `Waiting ${cooldownMs / 1000}s for HPA to scale down...`);
+      stressService.setPhasedTestState({ phase: 'idle', intensity: 0, phaseProgress: 0 });
+      
+      const cooldownStart = Date.now();
+      let scaleDownComplete = false;
+      
+      // Poll for scale-down during cooldown
+      while (Date.now() - cooldownStart < cooldownMs) {
+        if (stressService.getStopStress()) break;
+        
+        try {
+          const status = await k8sService.fetchClusterStatus();
+          const current = status.hpa?.current || 0;
+          
+          // Check if we've scaled back down
+          if (current <= scalingMetrics.startReplicas && !scaleDownComplete) {
+            scaleDownComplete = true;
+            const scaleDownTime = Date.now() - cooldownStart;
+            log.stress('SCALE-DOWN DETECTED', `Returned to ${current} replicas in ${(scaleDownTime / 1000).toFixed(1)}s`);
+            
+            // Update the iteration result with scale-down time
+            const results = stressService.getTestSuiteResults();
+            if (results.length > 0) {
+              const lastResult = results[results.length - 1];
+              lastResult.scaleDownTimeMs = scaleDownTime + (result.phases.rampDown?.durationMs || 0);
+            }
+          }
+        } catch {
+          // Ignore errors during cooldown polling
+        }
+        
+        // Wait 10s between polls with breathing room
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+      
+      if (!scaleDownComplete) {
+        log.stress('COOLDOWN', 'Timeout - continuing to next iteration');
+      } else {
+        log.stress('COOLDOWN', 'Scale-down complete, ready for next iteration');
+      }
+    } else if (!CONFIG.TEST_SUITE.COOLDOWN_BETWEEN_RUNS) {
       log.stress('Next iteration', 'Starting immediately (no cooldown)');
     }
   }
@@ -707,6 +757,7 @@ async function runTestSuite(iterations: number): Promise<void> {
   log.stress('TEST SUITE COMPLETE', `${aggregates.completed}/${iterations} iterations`);
   log.stress('RESULTS', 
     `Avg scale-up: ${aggregates.avgScaleUpTimeMs ? (aggregates.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A'}, ` +
+    `Avg scale-down: ${aggregates.avgScaleDownTimeMs ? (aggregates.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A'}, ` +
     `Avg peak: ${aggregates.avgPeakReplicas.toFixed(1)} replicas`
   );
   

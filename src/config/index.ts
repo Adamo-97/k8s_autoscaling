@@ -10,11 +10,11 @@ export const CONFIG = {
   
   // Stress test settings - Tuned for HPA triggering without pod crashes
   STRESS: {
-    CONCURRENCY: 20,         // Concurrent requests per round (reduced to prevent overload)
+    CONCURRENCY: 8,          // Reduced: ~150-200% CPU to scale to 3-4 pods, not 10
     ROUNDS: 12,              // Number of rounds (12 * 8s = 96s total)
     DURATION_MS: 8000,       // Duration per cpu-load call (8 seconds)
-    CHUNK_DURATION_MS: 200,  // Work chunk before yielding (200ms - balanced)
-    ITERATIONS_PER_CHUNK: 100000, // 100K iterations - sustainable load
+    CHUNK_DURATION_MS: 150,  // Shorter work chunks with more yielding
+    ITERATIONS_PER_CHUNK: 50000, // 50K iterations - moderate load for controlled scaling
   },
 
   // Phased load test settings (4-phase pattern for proper scalability testing)
@@ -29,7 +29,8 @@ export const CONFIG = {
   // Full test suite settings (for statistically valid results)
   TEST_SUITE: {
     ITERATIONS: 10,          // Minimum 10 iterations for valid averaging
-    COOLDOWN_BETWEEN_RUNS: false, // Do NOT cool down between runs (per requirements)
+    COOLDOWN_BETWEEN_RUNS: true, // Enable cooldown to observe scale-down metrics
+    COOLDOWN_MS: 120000,     // 2 minutes cooldown to allow HPA to scale down (60s stabilization + buffer)
   },
   
   // Timeouts

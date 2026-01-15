@@ -455,6 +455,9 @@ export async function executePhasedLoadTest(
     onPhaseChange('ramp-up', intensity, progress);
     
     await sendLoad(intensity, stepDuration);
+    
+    // Breathing room: 2s pause between intensity steps for HPA to catch up
+    await new Promise(resolve => setTimeout(resolve, 2000));
   }
   phaseResults.rampUp.durationMs = Date.now() - rampUpStart;
   
@@ -477,6 +480,9 @@ export async function executePhasedLoadTest(
     onPhaseChange('steady', 100, progress);
     
     await sendLoad(100, stepDuration);
+    
+    // Breathing room: 1s pause between steady chunks for metrics to update
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
   phaseResults.steady.durationMs = Date.now() - steadyStart;
   

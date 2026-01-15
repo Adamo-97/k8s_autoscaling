@@ -386,11 +386,14 @@ export function generateDashboardHtml(podName: string): string {
             updatePhaseIndicator(data.phase, data.intensity || 0, data.phaseProgress || 0);
           }
           
-          // Update iteration counter
+          // Update iteration counter - but only if data is meaningful (not from an empty pod)
           if (data.iteration > 0 && data.totalIterations > 0) {
             document.getElementById('suite-iteration').textContent = data.completedIterations + '/' + data.totalIterations;
             const progress = (data.completedIterations / data.totalIterations) * 100;
             document.getElementById('suite-bar').style.width = progress + '%';
+          } else if (testSuiteStarted && cachedResults.completed > 0) {
+            // Use cached values if we started a test but SSE is from a different pod
+            document.getElementById('suite-iteration').textContent = cachedResults.completed + '/' + expectedIterations;
           }
           
           // Update results from SSE-delivered aggregates (avoids load balancer routing issues)
@@ -442,6 +445,11 @@ export function generateDashboardHtml(podName: string): string {
     };
 
     // ===== TEST SUITE CONTROLS =====
+    // Track if we initiated a test suite (to distinguish idle from running-on-other-pod)
+    let testSuiteStarted = false;
+    let expectedIterations = 0;
+    let consecutiveNotRunning = 0; // Require multiple confirmations before declaring complete
+    
     document.getElementById('start-suite').onclick = () => {
       document.getElementById('start-phased').disabled = true;
       document.getElementById('start-suite').disabled = true;
@@ -449,31 +457,48 @@ export function generateDashboardHtml(podName: string): string {
       document.getElementById('view-results').disabled = false; // Keep enabled to view partial results
       logEvent('iteration', 'Starting 10-ITERATION test suite');
       
+      testSuiteStarted = true;
+      expectedIterations = 10;
+      consecutiveNotRunning = 0;
+      
       fetch('/run-test-suite', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iterations: 10}) })
         .then(r => r.json())
         .then(data => {
           logEvent('iteration', 'Test suite started: ' + data.estimatedDuration + ' estimated');
           connectPhasedStatus();
           
-          // Poll for completion
+          // Poll for completion - with protection against load balancer issues
           window.suiteInterval = setInterval(() => {
             fetch('/test-suite-status').then(r => r.json()).then(status => {
+              // CRITICAL: Don't trust a single "not running" response - may hit a different pod
               if (!status.running) {
-                clearInterval(window.suiteInterval);
-                document.getElementById('suite-status').textContent = 'Complete';
-                document.getElementById('suite-bar').style.width = '100%';
-                document.getElementById('view-results').disabled = false;
-                logEvent('iteration', 'Test suite COMPLETE - ' + status.completedIterations + ' iterations');
-                fetchResults();
-                resetPhasedUI();
+                consecutiveNotRunning++;
+                
+                // Only declare complete if:
+                // 1. We have actual results (completedIterations > 0), OR
+                // 2. We've seen "not running" 3+ times in a row (12+ seconds of polling)
+                if (status.completedIterations > 0 || consecutiveNotRunning >= 3) {
+                  clearInterval(window.suiteInterval);
+                  document.getElementById('suite-status').textContent = 'Complete';
+                  document.getElementById('suite-bar').style.width = '100%';
+                  document.getElementById('view-results').disabled = false;
+                  logEvent('iteration', 'Test suite COMPLETE - ' + status.completedIterations + ' iterations');
+                  fetchResults();
+                  resetPhasedUI();
+                  testSuiteStarted = false;
+                } else {
+                  logEvent('info', 'Ignoring not-running status (may be from different pod, ' + consecutiveNotRunning + '/3)');
+                }
               } else {
+                consecutiveNotRunning = 0; // Reset counter when we see running=true
                 document.getElementById('suite-iteration').textContent = status.completedIterations + '/' + status.totalIterations;
               }
             });
-          }, 5000);
+          }, 4000); // Poll slightly faster to compensate for retry requirement
         }).catch(e => {
           logEvent('error', 'Failed to start test suite: ' + e.message);
           resetPhasedUI();
+          testSuiteStarted = false;
         });
     };
 
@@ -535,7 +560,9 @@ export function generateDashboardHtml(podName: string): string {
             // Fetch partial results
             fetchResults();
           }
-          if (!data.running && data.completedIterations >= data.totalIterations) {
+          // CRITICAL: Only mark complete if we have actual results AND test is not running
+          // Don't trust 0/0 >= 0 from pods that don't know about the test
+          if (!data.running && data.completedIterations > 0 && data.completedIterations >= data.totalIterations) {
             document.getElementById('suite-status').textContent = 'Complete';
             resetPhasedUI();
           }
