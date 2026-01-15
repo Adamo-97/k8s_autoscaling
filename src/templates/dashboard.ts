@@ -350,8 +350,8 @@ export function generateDashboardHtml(podName: string): string {
 
     function updatePhaseIndicator(phase, intensity, progress) {
       document.getElementById('phase-name').textContent = phaseNames[phase] || phase;
-      document.getElementById('phase-intensity').textContent = intensity + '%';
-      document.getElementById('phase-bar').style.width = progress + '%';
+      document.getElementById('phase-intensity').textContent = Math.round(intensity) + '%';
+      document.getElementById('phase-bar').style.width = Math.round(progress) + '%';
       
       // Reset all phases
       ['wu', 'ru', 's', 'rd'].forEach(p => {
@@ -362,14 +362,16 @@ export function generateDashboardHtml(podName: string): string {
       const phaseOrder = ['warm-up', 'ramp-up', 'steady', 'ramp-down'];
       const currentIdx = phaseOrder.indexOf(phase);
       
-      phaseOrder.forEach((p, idx) => {
-        const el = document.getElementById('phase-' + phaseMap[p]);
-        if (idx < currentIdx) {
-          el.classList.add('complete');
-        } else if (idx === currentIdx) {
-          el.classList.add('active');
-        }
-      });
+      if (currentIdx >= 0) {
+        phaseOrder.forEach((p, idx) => {
+          const el = document.getElementById('phase-' + phaseMap[p]);
+          if (idx < currentIdx) {
+            el.classList.add('complete');
+          } else if (idx === currentIdx) {
+            el.classList.add('active');
+          }
+        });
+      }
     }
 
     function connectPhasedStatus() {
@@ -470,7 +472,10 @@ export function generateDashboardHtml(podName: string): string {
           document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu.toFixed(0) + '%';
           document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
           document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+          logEvent('info', 'Test results loaded: ' + results.completed + ' iterations completed');
         }
+      }).catch(e => {
+        logEvent('error', 'Failed to fetch results: ' + e.message);
       });
     }
 

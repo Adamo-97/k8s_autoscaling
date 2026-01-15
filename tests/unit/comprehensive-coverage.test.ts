@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { app } from '../../src/server';
+import { app, clearAllSSEIntervals } from '../../src/server';
 
 describe('Comprehensive Code Path Coverage', () => {
   // Stop any active stress tests before each test
@@ -10,6 +10,10 @@ describe('Comprehensive Code Path Coverage', () => {
 
   afterEach(async () => {
     await request(app).post('/stop-load');
+  });
+
+  afterAll(() => {
+    clearAllSSEIntervals();
   });
 
   describe('/generate-load stress test lifecycle coverage', () => {

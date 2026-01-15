@@ -311,39 +311,42 @@ export async function executeCpuWorkAtIntensity(
   const start = Date.now();
   const normalizedIntensity = Math.max(0, Math.min(100, intensity)) / 100;
   
-  if (stopStress || normalizedIntensity === 0) {
+  if (stopStress) {
+    return { elapsed: 0, wasStopped: true };
+  }
+  
+  if (normalizedIntensity === 0) {
     // For 0% intensity, just wait (warm-up/cooldown)
     const waitTime = Math.min(durationMs, 1000);
     await new Promise(resolve => setTimeout(resolve, waitTime));
     return { elapsed: Date.now() - start, wasStopped: stopStress };
   }
   
+  // Scale iterations based on intensity to actually generate CPU load
+  const baseIterations = CONFIG.STRESS.ITERATIONS_PER_CHUNK;
+  const scaledIterations = Math.max(1, Math.floor(baseIterations * normalizedIntensity));
   const chunkDuration = CONFIG.STRESS.CHUNK_DURATION_MS;
-  const iterations = Math.floor(CONFIG.STRESS.ITERATIONS_PER_CHUNK * normalizedIntensity);
+  
+  let result = 0; // Prevent optimization
   
   while (Date.now() - start < durationMs) {
     if (stopStress) {
       return { elapsed: Date.now() - start, wasStopped: true };
     }
     
-    // CPU work proportional to intensity
+    // CPU-intensive work proportional to intensity
     const chunkStart = Date.now();
-    const workDuration = chunkDuration * normalizedIntensity;
     
-    while (Date.now() - chunkStart < workDuration) {
-      for (let i = 0; i < iterations; i++) {
-        const x = Math.sqrt(i + 1);
+    // Tight loop that can't be optimized away
+    while (Date.now() - chunkStart < chunkDuration * normalizedIntensity) {
+      for (let i = 0; i < scaledIterations; i++) {
+        const x = Math.sqrt(i + result + 1);
         const y = Math.sin(x) * Math.cos(x);
-        Math.tan((i % 89) + 1) * y;
+        result += y * Math.tan((i % 89) + 1);
       }
     }
     
-    // Idle time inversely proportional to intensity
-    const idleTime = chunkDuration * (1 - normalizedIntensity);
-    if (idleTime > 10) {
-      await new Promise(resolve => setTimeout(resolve, idleTime));
-    }
-    
+    // Small yield to prevent process blocking
     await new Promise(resolve => setImmediate(resolve));
   }
   

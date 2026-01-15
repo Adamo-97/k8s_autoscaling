@@ -1,7 +1,11 @@
 import request from 'supertest';
-import { app } from '../../src/server';
+import { app, clearAllSSEIntervals } from '../../src/server';
 
 describe('Server Routes Unit Tests', () => {
+  afterAll(() => {
+    clearAllSSEIntervals();
+  });
+
   describe('GET /', () => {
     test('returns HTML dashboard with 200 status', async () => {
       const res = await request(app).get('/');

@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { app } from '../../src/server';
+import { app, clearAllSSEIntervals } from '../../src/server';
 
 describe('Stress Test Control and State Management', () => {
   // Clean up before and after each test
@@ -11,6 +11,10 @@ describe('Stress Test Control and State Management', () => {
   afterEach(async () => {
     await request(app).post('/stop-load');
     await new Promise(resolve => setTimeout(resolve, 100));
+  });
+
+  afterAll(() => {
+    clearAllSSEIntervals();
   });
 
   describe('Stress test lifecycle', () => {

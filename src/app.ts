@@ -17,6 +17,19 @@ import {
   generatePodsErrorHtml
 } from './utils/kubernetes';
 
+// Global set to track active SSE intervals for cleanup
+const activeSSEIntervals = new Set<NodeJS.Timeout>();
+
+/**
+ * Clear all active SSE intervals - called on server shutdown or in tests
+ */
+export function clearAllSSEIntervals(): void {
+  for (const interval of activeSSEIntervals) {
+    clearInterval(interval);
+  }
+  activeSSEIntervals.clear();
+}
+
 // Track scaling metrics for test suite
 interface ScalingMetrics {
   startReplicas: number;
@@ -54,6 +67,7 @@ function registerRoutes(app: Application): void {
   // Stress control
   app.post('/generate-load', generateLoadHandler);
   app.get('/cpu-load', cpuLoadHandler);
+  app.post('/cpu-load-intensity', cpuLoadIntensityHandler);
   app.post('/stop-load', stopLoadHandler);
   app.post('/internal-stop', internalStopHandler);
   
@@ -242,6 +256,40 @@ async function cpuLoadHandler(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * CPU load with intensity endpoint - performs CPU work at specified intensity and duration
+ * POST /cpu-load-intensity
+ * Body: { durationMs: number, intensity: number }
+ */
+async function cpuLoadIntensityHandler(req: Request, res: Response): Promise<void> {
+  const { durationMs = 6000, intensity = 100 } = req.body || {};
+  
+  // Early exit if stopped
+  if (stressService.getStopStress()) {
+    log.debug('CPU load intensity request - stopped flag is set, returning early');
+    res.json(createStressResult(0, 0, true, CONFIG.POD_NAME));
+    return;
+  }
+  
+  // If no active test, reset stop flag (direct call)
+  if (!stressService.getActiveStressTest()) {
+    log.debug('CPU load intensity request - no active test, resetting stop flag');
+    stressService.setStopStress(false);
+  }
+  
+  log.debug(`CPU load intensity starting on ${CONFIG.POD_NAME}: ${durationMs}ms @ ${intensity}%`);
+  const result = await stressService.executeCpuWorkAtIntensity(durationMs, intensity);
+  log.debug(`CPU load intensity complete: ${result.elapsed}ms, stopped=${result.wasStopped}`);
+  
+  res.json({
+    elapsed: result.elapsed,
+    wasStopped: result.wasStopped,
+    podName: CONFIG.POD_NAME,
+    intensity,
+    requestedDuration: durationMs
+  });
+}
+
+/**
  * Stop all stress tests
  */
 async function stopLoadHandler(req: Request, res: Response): Promise<void> {
@@ -328,6 +376,7 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
   
   // Periodic updates
   const intervalId = setInterval(fetchAndSend, CONFIG.TIMEOUTS.SSE_INTERVAL_MS);
+  activeSSEIntervals.add(intervalId);
   
   // Send keepalive every 15 seconds to prevent timeout
   const keepaliveId = setInterval(() => {
@@ -335,12 +384,15 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
       res.write(':keepalive\n\n');
     }
   }, 15000);
+  activeSSEIntervals.add(keepaliveId);
   
   // Cleanup on disconnect
   req.on('close', () => {
     isConnected = false;
     clearInterval(intervalId);
     clearInterval(keepaliveId);
+    activeSSEIntervals.delete(intervalId);
+    activeSSEIntervals.delete(keepaliveId);
   });
   
   req.on('error', () => {
@@ -508,6 +560,9 @@ async function runTestSuite(iterations: number): Promise<void> {
       break;
     }
     
+    // Reset stop flag for each iteration (in case previous iteration set it)
+    stressService.setStopStress(false);
+    
     log.stress(`ITERATION ${i}/${iterations}`, 'Starting phased test');
     stressService.setPhasedTestState({ iteration: i, totalIterations: iterations });
     
@@ -561,15 +616,20 @@ async function runTestSuite(iterations: number): Promise<void> {
       if (targets.length === 1 && (targets[0] === '127.0.0.1' || targets[0] === process.env.POD_IP)) {
         await stressService.executeCpuWorkAtIntensity(durationMs, intensity);
       } else {
+        // Distributed: send /cpu-load-intensity requests to pods at specified intensity
         const tasks = [];
         for (let j = 0; j < requestCount; j++) {
           const target = targets[j % targets.length];
-          tasks.push(fetch(`http://${target}:3000/cpu-load`, {
-            signal: AbortSignal.timeout(CONFIG.TIMEOUTS.FETCH_MS)
-          }).catch(() => null));
+          tasks.push(
+            fetch(`http://${target}:3000/cpu-load-intensity`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ durationMs, intensity }),
+              signal: AbortSignal.timeout(durationMs + 5000) // Timeout = duration + buffer
+            }).catch(() => null)
+          );
         }
         await Promise.all(tasks);
-        await new Promise(r => setTimeout(r, Math.max(100, durationMs - 1000)));
       }
     };
     
@@ -680,10 +740,12 @@ async function phasedTestStatusHandler(req: Request, res: Response): Promise<voi
   
   send();
   const intervalId = setInterval(send, 1000);
+  activeSSEIntervals.add(intervalId);
   
   req.on('close', () => {
     isConnected = false;
     clearInterval(intervalId);
+    activeSSEIntervals.delete(intervalId);
   });
 }
 

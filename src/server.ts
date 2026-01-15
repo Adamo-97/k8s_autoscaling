@@ -13,16 +13,17 @@ export { app } from './app';
 export { CONFIG, COLORS, log } from './config';
 export * from './services/stress.service';
 export * from './services/kubernetes.service';
+export { clearAllSSEIntervals } from './app';
 
 // Re-export utils for backward compatibility
 export * from './utils/kubernetes';
 
-import { app } from './app';
+import { app, clearAllSSEIntervals } from './app';
 import { CONFIG, COLORS, log } from './config';
 
 // Start the server when run directly
 if (require.main === module) {
-  app.listen(CONFIG.PORT, () => {
+  const server = app.listen(CONFIG.PORT, () => {
     console.log(`${COLORS.bright}${COLORS.cyan}╔════════════════════════════════════════════════════════════╗${COLORS.reset}`);
     console.log(`${COLORS.bright}${COLORS.cyan}║${COLORS.reset}  ${COLORS.green}K8s Autoscaling Demo Server${COLORS.reset}                              ${COLORS.cyan}║${COLORS.reset}`);
     console.log(`${COLORS.bright}${COLORS.cyan}╠════════════════════════════════════════════════════════════╣${COLORS.reset}`);
@@ -35,4 +36,17 @@ if (require.main === module) {
     log.info('Server started successfully');
     log.info(`HPA Target CPU: ${CONFIG.HPA_TARGET_CPU}%`);
   });
+
+  // Graceful shutdown
+  const shutdown = (signal: string) => {
+    log.info(`${signal} received, shutting down gracefully...`);
+    clearAllSSEIntervals();
+    server.close(() => {
+      log.info('Server closed');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }

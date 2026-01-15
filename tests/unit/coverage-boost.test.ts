@@ -1,7 +1,11 @@
 import request from 'supertest';
-import { app } from '../../src/server';
+import { app, clearAllSSEIntervals } from '../../src/server';
 
 describe('Error Handling and Edge Cases Coverage', () => {
+  afterAll(() => {
+    clearAllSSEIntervals();
+  });
+
   describe('Endpoint error resilience', () => {
     test('/health handles errors gracefully', async () => {
       const res = await request(app).get('/health');

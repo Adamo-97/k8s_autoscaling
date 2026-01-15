@@ -1,7 +1,12 @@
 import request from 'supertest';
-import { app } from '../../src/server';
+import { app, clearAllSSEIntervals } from '../../src/server';
 
 describe('SSE Endpoints and Real-time Monitoring', () => {
+  afterAll(() => {
+    // Clear all SSE intervals to prevent "Cannot log after tests are done" errors
+    clearAllSSEIntervals();
+  });
+
   describe('GET /stress-stream', () => {
     test('returns server-sent events stream', (done) => {
       const req = request(app)
