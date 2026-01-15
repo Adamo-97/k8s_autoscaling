@@ -477,19 +477,37 @@ export function generateDashboardHtml(podName: string): string {
         });
     };
 
+    // Local cache of best results seen - prevents overwriting good data with zeros from other pods
+    let cachedResults = { completed: 0, iterations: 0 };
+    
     // Update results UI directly from SSE-delivered aggregates (avoids load balancer issues)
     function updateResultsFromAggregates(results) {
+      // CRITICAL: Only update if this data has MORE completed iterations than cached
+      // This prevents load-balanced requests to empty pods from overwriting good results
+      if (results.completed < cachedResults.completed) {
+        logEvent('info', 'Ignoring stale results (' + results.completed + ' < cached ' + cachedResults.completed + ')');
+        return;
+      }
+      
+      // Update cache if we have more results
+      if (results.completed > cachedResults.completed) {
+        cachedResults = { 
+          completed: results.completed, 
+          iterations: results.iterations || cachedResults.iterations 
+        };
+      }
+      
       document.getElementById('results-section').style.display = 'block';
-      document.getElementById('result-iterations').textContent = results.completed + '/' + (results.iterations || '?');
+      document.getElementById('result-iterations').textContent = results.completed + '/' + (results.iterations || cachedResults.iterations || '?');
       
       if (results.completed > 0) {
         document.getElementById('result-avg-scaleup').textContent = results.avgScaleUpTimeMs ? (results.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
         document.getElementById('result-avg-scaledown').textContent = results.avgScaleDownTimeMs ? (results.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-        document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) : 'N/A';
+        document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) + ' pods' : 'N/A';
         document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu ? results.avgPeakCpu.toFixed(0) + '%' : 'N/A';
         document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
         document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
-        logEvent('info', 'Results updated: ' + results.completed + '/' + results.iterations + ' iterations (via SSE)');
+        logEvent('info', 'Results: ' + results.completed + '/' + results.iterations + ' iterations | Peak: ' + (results.avgPeakReplicas ? results.avgPeakReplicas.toFixed(1) : '?') + ' replicas');
       }
     }
 
