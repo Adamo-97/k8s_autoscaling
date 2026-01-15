@@ -16,6 +16,21 @@ export const CONFIG = {
     CHUNK_DURATION_MS: 200,  // Work chunk before yielding (200ms - balanced)
     ITERATIONS_PER_CHUNK: 100000, // 100K iterations - sustainable load
   },
+
+  // Phased load test settings (4-phase pattern for proper scalability testing)
+  PHASED_TEST: {
+    WARM_UP_MS: 30000,       // Phase 1: 30s system stabilization (no load)
+    RAMP_UP_MS: 60000,       // Phase 2: 60s gradual load increase (10% → 100%)
+    STEADY_MS: 60000,        // Phase 3: 60s sustained peak load
+    RAMP_DOWN_MS: 60000,     // Phase 4: 60s gradual load decrease (100% → 0%)
+    INTENSITY_STEPS: 10,     // Number of intensity levels (10 = 10% increments)
+  },
+
+  // Full test suite settings (for statistically valid results)
+  TEST_SUITE: {
+    ITERATIONS: 10,          // Minimum 10 iterations for valid averaging
+    COOLDOWN_BETWEEN_RUNS: false, // Do NOT cool down between runs (per requirements)
+  },
   
   // Timeouts
   TIMEOUTS: {

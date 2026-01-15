@@ -17,6 +17,15 @@ import {
   generatePodsErrorHtml
 } from './utils/kubernetes';
 
+// Track scaling metrics for test suite
+interface ScalingMetrics {
+  startReplicas: number;
+  peakReplicas: number;
+  peakCpu: number;
+  scaleUpDetectedAt: number | null;
+  scaleDownDetectedAt: number | null;
+}
+
 /**
  * Create and configure the Express application
  */
@@ -48,9 +57,18 @@ function registerRoutes(app: Application): void {
   app.post('/stop-load', stopLoadHandler);
   app.post('/internal-stop', internalStopHandler);
   
+  // Phased load test (4-phase pattern)
+  app.post('/phased-load', phasedLoadHandler);
+  
+  // Full test suite (10 iterations)
+  app.post('/run-test-suite', testSuiteHandler);
+  app.get('/test-suite-status', testSuiteStatusHandler);
+  app.get('/test-suite-results', testSuiteResultsHandler);
+  
   // SSE endpoints
   app.get('/cluster-status', clusterStatusHandler);
   app.get('/stress-stream', stressStreamHandler);
+  app.get('/phased-test-status', phasedTestStatusHandler);
   
   // Legacy endpoints
   app.get('/stress', stressPageHandler);
@@ -329,6 +347,343 @@ async function clusterStatusHandler(req: Request, res: Response): Promise<void> 
     isConnected = false;
     clearInterval(intervalId);
     clearInterval(keepaliveId);
+  });
+}
+
+// ============= Phased Load Test Handlers =============
+
+/**
+ * Start a phased load test (4-phase pattern)
+ * POST /phased-load
+ */
+async function phasedLoadHandler(req: Request, res: Response): Promise<void> {
+  if (stressService.getActiveStressTest()) {
+    res.status(409).json({ 
+      error: 'Test already running',
+      message: 'A stress test is already in progress. Stop it first or wait for completion.'
+    });
+    return;
+  }
+  
+  stressService.startStressTest();
+  stressService.resetPhasedTestState();
+  
+  // Get targets for distributed load
+  let podIps = await k8sService.getPodIPs();
+  if (!podIps.length) {
+    const serviceIP = await k8sService.getServiceClusterIP();
+    if (serviceIP) podIps = [serviceIP];
+  }
+  const targets = podIps.length ? podIps : ['127.0.0.1'];
+  
+  log.stress('PHASED LOAD TEST', `Starting 4-phase test on ${targets.length} targets`);
+  
+  // Run phased test in background
+  runPhasedLoadTest(targets).catch(err => {
+    log.error(`Phased load test failed: ${err}`);
+    stressService.endStressTest();
+    stressService.resetPhasedTestState();
+  });
+  
+  res.status(202).json({
+    status: 'started',
+    message: 'Phased load test started (4 phases: warm-up, ramp-up, steady, ramp-down)',
+    phases: {
+      warmUp: `${CONFIG.PHASED_TEST.WARM_UP_MS / 1000}s`,
+      rampUp: `${CONFIG.PHASED_TEST.RAMP_UP_MS / 1000}s`,
+      steady: `${CONFIG.PHASED_TEST.STEADY_MS / 1000}s`,
+      rampDown: `${CONFIG.PHASED_TEST.RAMP_DOWN_MS / 1000}s`
+    },
+    totalDuration: `${(CONFIG.PHASED_TEST.WARM_UP_MS + CONFIG.PHASED_TEST.RAMP_UP_MS + 
+                       CONFIG.PHASED_TEST.STEADY_MS + CONFIG.PHASED_TEST.RAMP_DOWN_MS) / 1000}s`,
+    targets: targets.length,
+    statusEndpoint: '/phased-test-status'
+  });
+}
+
+/**
+ * Run the phased load test
+ */
+async function runPhasedLoadTest(targets: string[]): Promise<void> {
+  const sendLoadAtIntensity = async (intensity: number, durationMs: number): Promise<void> => {
+    if (stressService.getStopStress()) return;
+    
+    // Calculate requests based on intensity
+    const requestCount = Math.max(1, Math.floor(CONFIG.STRESS.CONCURRENCY * (intensity / 100)));
+    
+    if (targets.length === 1 && (targets[0] === '127.0.0.1' || targets[0] === process.env.POD_IP)) {
+      // Single pod: run local CPU work at intensity
+      await stressService.executeCpuWorkAtIntensity(durationMs, intensity);
+    } else {
+      // Distributed: send requests to pods
+      const iterations = Math.ceil(durationMs / CONFIG.STRESS.DURATION_MS);
+      for (let i = 0; i < iterations; i++) {
+        if (stressService.getStopStress()) break;
+        
+        const tasks = [];
+        for (let j = 0; j < requestCount; j++) {
+          const target = targets[j % targets.length];
+          const url = `http://${target}:3000/cpu-load`;
+          tasks.push(
+            fetch(url, { 
+              method: 'GET',
+              signal: AbortSignal.timeout(CONFIG.TIMEOUTS.FETCH_MS)
+            }).catch(() => null)
+          );
+        }
+        await Promise.all(tasks);
+        await new Promise(r => setImmediate(r));
+      }
+    }
+  };
+  
+  const onPhaseChange = (phase: stressService.TestPhase, intensity: number, progress: number) => {
+    log.stress(`Phase: ${phase.toUpperCase()}`, `Intensity: ${intensity}%, Progress: ${progress.toFixed(0)}%`);
+  };
+  
+  try {
+    const result = await stressService.executePhasedLoadTest(sendLoadAtIntensity, onPhaseChange);
+    log.stress('Phased test result', `Stopped: ${result.wasStopped}`);
+  } finally {
+    stressService.endStressTest();
+  }
+}
+
+/**
+ * Start full test suite (10+ iterations)
+ * POST /run-test-suite
+ */
+async function testSuiteHandler(req: Request, res: Response): Promise<void> {
+  if (stressService.getActiveStressTest()) {
+    res.status(409).json({
+      error: 'Test already running',
+      message: 'A test is already in progress.'
+    });
+    return;
+  }
+  
+  const iterations = req.body?.iterations || CONFIG.TEST_SUITE.ITERATIONS;
+  
+  stressService.startStressTest();
+  stressService.resetTestSuiteResults();
+  stressService.setPhasedTestState({ 
+    phase: 'idle', 
+    iteration: 0, 
+    totalIterations: iterations 
+  });
+  
+  log.stress('TEST SUITE', `Starting ${iterations}-iteration test suite`);
+  
+  // Run test suite in background
+  runTestSuite(iterations).catch(err => {
+    log.error(`Test suite failed: ${err}`);
+    stressService.endStressTest();
+  });
+  
+  res.status(202).json({
+    status: 'started',
+    message: `Test suite started with ${iterations} iterations`,
+    iterations,
+    estimatedDuration: `${(iterations * (CONFIG.PHASED_TEST.WARM_UP_MS + CONFIG.PHASED_TEST.RAMP_UP_MS + 
+                         CONFIG.PHASED_TEST.STEADY_MS + CONFIG.PHASED_TEST.RAMP_DOWN_MS)) / 60000} minutes`,
+    statusEndpoint: '/test-suite-status',
+    resultsEndpoint: '/test-suite-results'
+  });
+}
+
+/**
+ * Run the full test suite
+ */
+async function runTestSuite(iterations: number): Promise<void> {
+  let podIps = await k8sService.getPodIPs();
+  if (!podIps.length) {
+    const serviceIP = await k8sService.getServiceClusterIP();
+    if (serviceIP) podIps = [serviceIP];
+  }
+  const targets = podIps.length ? podIps : ['127.0.0.1'];
+  
+  for (let i = 1; i <= iterations; i++) {
+    if (stressService.getStopStress()) {
+      log.stress('Test suite stopped', `Completed ${i - 1}/${iterations} iterations`);
+      break;
+    }
+    
+    log.stress(`ITERATION ${i}/${iterations}`, 'Starting phased test');
+    stressService.setPhasedTestState({ iteration: i, totalIterations: iterations });
+    
+    const iterationStart = Date.now();
+    const scalingMetrics: ScalingMetrics = {
+      startReplicas: 0,
+      peakReplicas: 0,
+      peakCpu: 0,
+      scaleUpDetectedAt: null,
+      scaleDownDetectedAt: null
+    };
+    
+    // Get initial replica count
+    try {
+      const status = await k8sService.fetchClusterStatus();
+      scalingMetrics.startReplicas = status.hpa?.current || 1;
+    } catch {
+      scalingMetrics.startReplicas = 1;
+    }
+    
+    // Track metrics during test
+    const metricsInterval = setInterval(async () => {
+      try {
+        const status = await k8sService.fetchClusterStatus();
+        const current = status.hpa?.current || 0;
+        const cpu = status.hpa?.cpuValue || 0;
+        
+        if (current > scalingMetrics.peakReplicas) {
+          scalingMetrics.peakReplicas = current;
+          if (!scalingMetrics.scaleUpDetectedAt && current > scalingMetrics.startReplicas) {
+            scalingMetrics.scaleUpDetectedAt = Date.now() - iterationStart;
+          }
+        }
+        if (cpu > scalingMetrics.peakCpu) {
+          scalingMetrics.peakCpu = cpu;
+        }
+        if (scalingMetrics.scaleUpDetectedAt && !scalingMetrics.scaleDownDetectedAt && 
+            current <= scalingMetrics.startReplicas) {
+          scalingMetrics.scaleDownDetectedAt = Date.now() - iterationStart;
+        }
+      } catch {
+        // Ignore metrics errors
+      }
+    }, 5000);
+    
+    // Run phased test
+    const sendLoad = async (intensity: number, durationMs: number) => {
+      if (stressService.getStopStress()) return;
+      const requestCount = Math.max(1, Math.floor(CONFIG.STRESS.CONCURRENCY * (intensity / 100)));
+      
+      if (targets.length === 1 && (targets[0] === '127.0.0.1' || targets[0] === process.env.POD_IP)) {
+        await stressService.executeCpuWorkAtIntensity(durationMs, intensity);
+      } else {
+        const tasks = [];
+        for (let j = 0; j < requestCount; j++) {
+          const target = targets[j % targets.length];
+          tasks.push(fetch(`http://${target}:3000/cpu-load`, {
+            signal: AbortSignal.timeout(CONFIG.TIMEOUTS.FETCH_MS)
+          }).catch(() => null));
+        }
+        await Promise.all(tasks);
+        await new Promise(r => setTimeout(r, Math.max(100, durationMs - 1000)));
+      }
+    };
+    
+    const result = await stressService.executePhasedLoadTest(
+      sendLoad,
+      () => {} // Phase changes logged elsewhere
+    );
+    
+    clearInterval(metricsInterval);
+    
+    // Record iteration result
+    const iterationResult: stressService.TestIterationResult = {
+      iteration: i,
+      scaleUpTimeMs: scalingMetrics.scaleUpDetectedAt,
+      scaleDownTimeMs: scalingMetrics.scaleDownDetectedAt,
+      peakReplicas: scalingMetrics.peakReplicas,
+      peakCpuPercent: scalingMetrics.peakCpu,
+      phases: {
+        warmUp: { durationMs: result.phases.warmUp.durationMs },
+        rampUp: { durationMs: result.phases.rampUp.durationMs, finalReplicas: scalingMetrics.peakReplicas },
+        steady: { durationMs: result.phases.steady.durationMs, avgReplicas: scalingMetrics.peakReplicas },
+        rampDown: { durationMs: result.phases.rampDown.durationMs, finalReplicas: scalingMetrics.startReplicas }
+      }
+    };
+    
+    stressService.addTestIterationResult(iterationResult);
+    log.stress(`Iteration ${i} complete`, 
+      `Peak: ${scalingMetrics.peakReplicas} replicas, CPU: ${scalingMetrics.peakCpu}%`);
+    
+    // NO cooldown between runs (per requirements)
+    if (!CONFIG.TEST_SUITE.COOLDOWN_BETWEEN_RUNS) {
+      log.stress('Next iteration', 'Starting immediately (no cooldown)');
+    }
+  }
+  
+  // Log final aggregated results
+  const aggregates = stressService.calculateTestSuiteAggregates();
+  log.stress('TEST SUITE COMPLETE', `${aggregates.completed}/${iterations} iterations`);
+  log.stress('RESULTS', 
+    `Avg scale-up: ${aggregates.avgScaleUpTimeMs ? (aggregates.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A'}, ` +
+    `Avg peak: ${aggregates.avgPeakReplicas.toFixed(1)} replicas`
+  );
+  
+  stressService.endStressTest();
+}
+
+/**
+ * Get test suite status
+ * GET /test-suite-status
+ */
+function testSuiteStatusHandler(req: Request, res: Response): void {
+  const state = stressService.getPhasedTestState();
+  const isRunning = stressService.getActiveStressTest();
+  
+  res.json({
+    running: isRunning,
+    phase: state.phase,
+    intensity: state.intensity,
+    iteration: state.iteration,
+    totalIterations: state.totalIterations,
+    phaseProgress: state.phaseProgress,
+    completedIterations: stressService.getTestSuiteResults().length
+  });
+}
+
+/**
+ * Get test suite results
+ * GET /test-suite-results
+ */
+function testSuiteResultsHandler(req: Request, res: Response): void {
+  const aggregates = stressService.calculateTestSuiteAggregates();
+  res.json(aggregates);
+}
+
+/**
+ * SSE endpoint for phased test status
+ * GET /phased-test-status
+ */
+async function phasedTestStatusHandler(req: Request, res: Response): Promise<void> {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  
+  res.write(':ok\n\n');
+  
+  let isConnected = true;
+  
+  const send = () => {
+    if (!isConnected || res.writableEnded) return;
+    
+    const state = stressService.getPhasedTestState();
+    const isRunning = stressService.getActiveStressTest();
+    const results = stressService.getTestSuiteResults();
+    
+    try {
+      res.write(`data: ${JSON.stringify({
+        running: isRunning,
+        ...state,
+        completedIterations: results.length,
+        latestResult: results.length > 0 ? results[results.length - 1] : null
+      })}\n\n`);
+    } catch {
+      isConnected = false;
+    }
+  };
+  
+  send();
+  const intervalId = setInterval(send, 1000);
+  
+  req.on('close', () => {
+    isConnected = false;
+    clearInterval(intervalId);
   });
 }
 

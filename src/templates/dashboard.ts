@@ -53,6 +53,21 @@ export function generateDashboardHtml(podName: string): string {
     .log-entry.pod-new{background:rgba(250,204,21,0.1);color:#facc15;border-left:3px solid #facc15}
     .log-entry.error{background:rgba(248,113,113,0.1);color:#f87171;border-left:3px solid #f87171}
     .log-entry.info{color:var(--muted)}
+    .log-entry.phase{background:rgba(56,189,248,0.1);color:#38bdf8;border-left:3px solid #38bdf8}
+    .log-entry.iteration{background:rgba(167,139,250,0.1);color:#a78bfa;border-left:3px solid #a78bfa}
+    .phase-indicator{display:flex;gap:4px;margin:12px 0}
+    .phase-indicator .phase{flex:1;padding:6px 4px;text-align:center;font-size:10px;border-radius:4px;background:rgba(255,255,255,0.05);color:var(--muted);transition:all 0.3s}
+    .phase-indicator .phase.active{background:rgba(110,231,183,0.2);color:var(--accent);font-weight:700}
+    .phase-indicator .phase.complete{background:rgba(110,231,183,0.1);color:var(--accent)}
+    .iteration-badge{display:inline-block;background:rgba(167,139,250,0.2);color:#a78bfa;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:8px}
+    .results-card{margin-top:16px}
+    .results-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+    .result-item{background:rgba(0,0,0,0.2);padding:12px;border-radius:6px;text-align:center}
+    .result-item .value{font-size:20px;font-weight:700;color:var(--accent)}
+    .result-item .label{font-size:10px;color:var(--muted);margin-top:4px}
+    button.primary{background:rgba(110,231,183,0.15);border-color:rgba(110,231,183,0.4)}
+    button.secondary{background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);color:#60a5fa}
+    button.secondary:hover{background:rgba(96,165,250,0.2)}
   </style>
 </head>
 <body>
@@ -73,12 +88,39 @@ export function generateDashboardHtml(podName: string): string {
       </div>
 
       <div class="card">
-        <h3>Stress Control</h3>
+        <h3>Stress Control (Quick Test)</h3>
         <div class="stat"><span class="label">Status</span><span class="value" id="stress-status">Idle</span></div>
         <div class="bar"><div id="stress-bar" style="width:0%"></div></div>
         <div class="controls">
-          <button id="start-stress">Start CPU Load (80s)</button>
+          <button id="start-stress">Quick Load (80s)</button>
           <button id="stop-stress" disabled>Stop</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Phased Test (4-Phase Pattern)</h3>
+        <div class="stat"><span class="label">Current Phase</span><span class="value" id="phase-name">Idle</span></div>
+        <div class="stat"><span class="label">Intensity</span><span class="value" id="phase-intensity">0%</span></div>
+        <div class="phase-indicator">
+          <div class="phase" id="phase-wu">WU</div>
+          <div class="phase" id="phase-ru">RU</div>
+          <div class="phase" id="phase-s">S</div>
+          <div class="phase" id="phase-rd">RD</div>
+        </div>
+        <div class="bar"><div id="phase-bar" style="width:0%"></div></div>
+        <div class="controls">
+          <button id="start-phased" class="primary">Start Phased Test</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Full Test Suite (10 Iterations)</h3>
+        <div class="stat"><span class="label">Status</span><span class="value" id="suite-status">Idle</span></div>
+        <div class="stat"><span class="label">Iteration</span><span class="value" id="suite-iteration">—</span></div>
+        <div class="bar"><div id="suite-bar" style="width:0%"></div></div>
+        <div class="controls">
+          <button id="start-suite" class="secondary">Run 10 Iterations</button>
+          <button id="view-results" class="secondary" disabled>View Results</button>
         </div>
       </div>
 
@@ -93,6 +135,40 @@ export function generateDashboardHtml(podName: string): string {
 
     <h2>Active Pods</h2>
     <div id="pods-grid" class="grid"></div>
+
+    <h2>Test Suite Results</h2>
+    <div id="results-section" class="card results-card" style="display:none">
+      <div class="results-grid">
+        <div class="result-item">
+          <div class="value" id="result-iterations">—</div>
+          <div class="label">Iterations</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-avg-scaleup">—</div>
+          <div class="label">Avg Scale-Up</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-avg-scaledown">—</div>
+          <div class="label">Avg Scale-Down</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-peak-replicas">—</div>
+          <div class="label">Avg Peak Replicas</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-peak-cpu">—</div>
+          <div class="label">Avg Peak CPU</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-min-scaleup">—</div>
+          <div class="label">Min Scale-Up</div>
+        </div>
+        <div class="result-item">
+          <div class="value" id="result-max-scaleup">—</div>
+          <div class="label">Max Scale-Up</div>
+        </div>
+      </div>
+    </div>
 
     <h2>Event Log</h2>
     <div id="logs"></div>
@@ -266,6 +342,139 @@ export function generateDashboardHtml(podName: string): string {
         logEvent('error', 'Stop request failed: ' + e.message);
       });
     };
+
+    // ===== PHASED TEST CONTROLS =====
+    let phasedES = null;
+    const phaseMap = { 'warm-up': 'wu', 'ramp-up': 'ru', 'steady': 's', 'ramp-down': 'rd' };
+    const phaseNames = { 'idle': 'Idle', 'warm-up': 'Warm-Up', 'ramp-up': 'Ramp-Up', 'steady': 'Steady', 'ramp-down': 'Ramp-Down', 'complete': 'Complete' };
+
+    function updatePhaseIndicator(phase, intensity, progress) {
+      document.getElementById('phase-name').textContent = phaseNames[phase] || phase;
+      document.getElementById('phase-intensity').textContent = intensity + '%';
+      document.getElementById('phase-bar').style.width = progress + '%';
+      
+      // Reset all phases
+      ['wu', 'ru', 's', 'rd'].forEach(p => {
+        document.getElementById('phase-' + p).classList.remove('active', 'complete');
+      });
+      
+      // Mark completed and active phases
+      const phaseOrder = ['warm-up', 'ramp-up', 'steady', 'ramp-down'];
+      const currentIdx = phaseOrder.indexOf(phase);
+      
+      phaseOrder.forEach((p, idx) => {
+        const el = document.getElementById('phase-' + phaseMap[p]);
+        if (idx < currentIdx) {
+          el.classList.add('complete');
+        } else if (idx === currentIdx) {
+          el.classList.add('active');
+        }
+      });
+    }
+
+    function connectPhasedStatus() {
+      if (phasedES) phasedES.close();
+      phasedES = new EventSource('/phased-test-status');
+      phasedES.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          
+          if (data.phase && data.phase !== 'idle') {
+            updatePhaseIndicator(data.phase, data.intensity || 0, data.phaseProgress || 0);
+            
+            if (data.iteration > 0) {
+              document.getElementById('suite-iteration').textContent = data.iteration + '/' + data.totalIterations;
+              document.getElementById('suite-bar').style.width = ((data.iteration - 1) / data.totalIterations * 100) + '%';
+            }
+          }
+          
+          if (!data.running && data.phase === 'complete') {
+            logEvent('phase', 'Phased test COMPLETE');
+            resetPhasedUI();
+            if (data.totalIterations > 1) {
+              fetchResults();
+            }
+          }
+        } catch(e) { console.error(e); }
+      };
+    }
+
+    function resetPhasedUI() {
+      document.getElementById('start-phased').disabled = false;
+      document.getElementById('start-suite').disabled = false;
+      document.getElementById('phase-name').textContent = 'Idle';
+      document.getElementById('phase-intensity').textContent = '0%';
+      ['wu', 'ru', 's', 'rd'].forEach(p => {
+        document.getElementById('phase-' + p).classList.remove('active', 'complete');
+      });
+    }
+
+    document.getElementById('start-phased').onclick = () => {
+      document.getElementById('start-phased').disabled = true;
+      document.getElementById('start-suite').disabled = true;
+      logEvent('phase', 'Starting 4-PHASE test (WU→RU→S→RD)');
+      
+      fetch('/phased-load', { method: 'POST' }).then(r => r.json()).then(data => {
+        logEvent('phase', 'Phased test started: ' + data.totalDuration + ' total');
+        connectPhasedStatus();
+      }).catch(e => {
+        logEvent('error', 'Failed to start phased test: ' + e.message);
+        resetPhasedUI();
+      });
+    };
+
+    // ===== TEST SUITE CONTROLS =====
+    document.getElementById('start-suite').onclick = () => {
+      document.getElementById('start-phased').disabled = true;
+      document.getElementById('start-suite').disabled = true;
+      document.getElementById('suite-status').textContent = 'Running';
+      document.getElementById('view-results').disabled = true;
+      logEvent('iteration', 'Starting 10-ITERATION test suite');
+      
+      fetch('/run-test-suite', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iterations: 10}) })
+        .then(r => r.json())
+        .then(data => {
+          logEvent('iteration', 'Test suite started: ' + data.estimatedDuration + ' estimated');
+          connectPhasedStatus();
+          
+          // Poll for completion
+          window.suiteInterval = setInterval(() => {
+            fetch('/test-suite-status').then(r => r.json()).then(status => {
+              if (!status.running) {
+                clearInterval(window.suiteInterval);
+                document.getElementById('suite-status').textContent = 'Complete';
+                document.getElementById('suite-bar').style.width = '100%';
+                document.getElementById('view-results').disabled = false;
+                logEvent('iteration', 'Test suite COMPLETE - ' + status.completedIterations + ' iterations');
+                fetchResults();
+                resetPhasedUI();
+              } else {
+                document.getElementById('suite-iteration').textContent = status.completedIterations + '/' + status.totalIterations;
+              }
+            });
+          }, 5000);
+        }).catch(e => {
+          logEvent('error', 'Failed to start test suite: ' + e.message);
+          resetPhasedUI();
+        });
+    };
+
+    function fetchResults() {
+      fetch('/test-suite-results').then(r => r.json()).then(results => {
+        if (results.completed > 0) {
+          document.getElementById('results-section').style.display = 'block';
+          document.getElementById('result-iterations').textContent = results.completed + '/' + results.iterations;
+          document.getElementById('result-avg-scaleup').textContent = results.avgScaleUpTimeMs ? (results.avgScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+          document.getElementById('result-avg-scaledown').textContent = results.avgScaleDownTimeMs ? (results.avgScaleDownTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+          document.getElementById('result-peak-replicas').textContent = results.avgPeakReplicas.toFixed(1);
+          document.getElementById('result-peak-cpu').textContent = results.avgPeakCpu.toFixed(0) + '%';
+          document.getElementById('result-min-scaleup').textContent = results.minScaleUpTimeMs ? (results.minScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+          document.getElementById('result-max-scaleup').textContent = results.maxScaleUpTimeMs ? (results.maxScaleUpTimeMs / 1000).toFixed(1) + 's' : 'N/A';
+        }
+      });
+    }
+
+    document.getElementById('view-results').onclick = fetchResults;
 
     logEvent('info', 'Dashboard initialized - connected to cluster');
   </script>

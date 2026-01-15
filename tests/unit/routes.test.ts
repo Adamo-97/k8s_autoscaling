@@ -24,7 +24,21 @@ describe('Server Routes Unit Tests', () => {
     test('dashboard includes stress control', async () => {
       const res = await request(app).get('/');
       expect(res.text).toContain('Stress Control');
-      expect(res.text).toContain('Start CPU Load');
+      expect(res.text).toContain('Quick Load');
+    });
+
+    test('dashboard includes phased test controls', async () => {
+      const res = await request(app).get('/');
+      expect(res.text).toContain('Phased Test');
+      expect(res.text).toContain('4-Phase Pattern');
+      expect(res.text).toContain('Start Phased Test');
+    });
+
+    test('dashboard includes test suite controls', async () => {
+      const res = await request(app).get('/');
+      expect(res.text).toContain('Full Test Suite');
+      expect(res.text).toContain('10 Iterations');
+      expect(res.text).toContain('Run 10 Iterations');
     });
 
     test('dashboard includes EventSource for SSE', async () => {
